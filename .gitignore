@@ -1,0 +1,29 @@
+# Node
+node_modules/
+.dist/
+dist/
+.tmp/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-store/
+
+# Env
+.env
+.env.*
+
+# Editor / OS
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Python virtual env (present)
+.venv/
+
+# Build
+coverage/
+
+# BMAD core generated
+.bmad-core/
+web-bundles/
