@@ -1,12 +1,12 @@
 # Checklist — Sprint 1: Sessão de Estudo e Avaliação
 
-- [ ] Implementar componente de TTS (Text-to-Speech) para mascote
-- [ ] Integrar API de reconhecimento de voz (ASR)
-- [ ] Criar lógica de validação e processamento da resposta
-- [ ] Desenvolver algoritmo de avaliação automática
-- [ ] Criar componente visual de estrelas
-- [ ] Integrar feedback sonoro e animações
-- [ ] Testar fluxo completo de sessão de estudo
+- [x] Implementar componente de TTS (Text-to-Speech) para mascote *(voz selecionável, persistência, cancel/retry)*
+- [x] Integrar API de reconhecimento de voz (ASR) *(Web Speech API básica, transcrição parcial/final)*
+- [x] Criar lógica de validação e processamento da resposta *(normalização acentos/pontuação + avaliação correto/incorreto)*
+- [ ] Desenvolver algoritmo de avaliação automática *(pendente: cálculo de estrelas / pontuação granular)*
+- [ ] Criar componente visual de estrelas *(UI + animação)*
+- [ ] Integrar feedback sonoro e animações *(sons acerto/erro, mascote reações)*
+- [ ] Testar fluxo completo de sessão de estudo *(faltam testes automatizados / casos edge)*
 
 ---
 
