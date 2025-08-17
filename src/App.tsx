@@ -7,7 +7,10 @@ import { resolveFirebaseConfig } from './firebase/defaultConfig';
 import { MascoteTTS } from './components/MascoteTTS';
 import { Stars } from './components/Stars';
 import { avaliar, respostasCorretas, normalizar } from './evaluation';
-import { DeckImport, Flashcard } from './components/DeckImport';
+import { Deck, DeckAudioMeta, Flashcard, DeckStats, ProgressMap } from './domain/models';
+import { gerarDica, obterRespostaCorretaPreferida } from './utils/scoring';
+import { useLocalDecks } from './features/decks/useLocalDecks';
+import { DeckImport } from './components/DeckImport';
 // Imports estáticos para evitar falhas de carregamento dinâmico em GitHub Pages (chunks 404)
 import { createDeck, updateDeckDoc, listenPublishedDecks, deleteDeckDoc } from './firebase/decksRepo';
 import { uploadDeckAudio } from './firebase/storage';
@@ -73,9 +76,7 @@ export const App: React.FC = () => {
     'O que é um flashcard?'
   ] : [];
 
-  // Estrutura multi-deck
-  interface DeckAudioMeta { name: string; size: number; type: string; key: string; }
-  interface Deck { id: string; name: string; active: boolean; cards: Flashcard[]; createdAt: number; audio?: DeckAudioMeta; published?: boolean; cloudId?: string; }
+  // Estrutura multi-deck (tipos movidos para domain/models)
 
   // ---------------- Audio Storage (IndexedDB) ----------------
   const openAudioDb = () => new Promise<IDBDatabase | null>((resolve) => {
@@ -121,16 +122,10 @@ export const App: React.FC = () => {
     if (!url) return <div className="caption">Áudio…</div>;
     return <audio controls preload="metadata" src={url} style={{ width:'100%' }} />;
   };
-  interface DeckStats { attempts: number; correct: number; sessions: number; }
+  // DeckStats movido para domain/models
 
-  const loadDecks = (): Deck[] => {
-    try { const raw = localStorage.getItem('decks.all'); if (raw) return JSON.parse(raw); } catch { /* ignore */ }
-    // Migração legado deck.imported
-    try { const legacy = localStorage.getItem('deck.imported'); if (legacy) { const cards: Flashcard[] = JSON.parse(legacy); return [{ id: 'importado', name: 'Importado', active: true, cards, createdAt: Date.now() }]; } } catch { /* ignore */ }
-    return [];
-  };
-  const [decks, setDecks] = useState<Deck[]>(loadDecks);
-  useEffect(() => { try { localStorage.setItem('decks.all', JSON.stringify(decks)); } catch { /* ignore */ } }, [decks]);
+  // Decks locais via hook
+  const { decks, setDecks } = useLocalDecks();
 
   const loadStats = (): Record<string, DeckStats> => {
     try { const raw = localStorage.getItem('deck.stats'); if (raw) return JSON.parse(raw); } catch { /* ignore */ }
@@ -164,7 +159,6 @@ export const App: React.FC = () => {
   const [inicioPerguntaTs, setInicioPerguntaTs] = useState(Date.now());
   const [ultimoTempoRespostaMs, setUltimoTempoRespostaMs] = useState<number | null>(null);
   // Histórico de pontuações por deck/cartão
-  interface ProgressMap { [deckId: string]: { [cardIndex: string]: number[] } }
   const loadProgress = (): ProgressMap => { try { const raw = localStorage.getItem('deck.progress'); if (raw) return JSON.parse(raw); } catch { /* ignore */ } return {}; };
   const [progress, setProgress] = useState<ProgressMap>(loadProgress);
   useEffect(() => { try { localStorage.setItem('deck.progress', JSON.stringify(progress)); } catch { /* ignore */ } }, [progress]);
@@ -428,32 +422,7 @@ export const App: React.FC = () => {
     try { if (el) { el.currentTime = 0; el.play().catch(()=>{}); } } catch {/* */}
   };
 
-  const obterRespostaCorretaPreferida = (i: number) => {
-    const lista = usandoDeckImportado ? (getCurrentDeck()!.cards[i]?.answers || []) : (respostasCorretas[i] || []);
-    const preferida = lista.find(r => /[áéíóúãõâêîôûç]/i.test(r)) || lista[0] || '';
-    // Capitaliza primeira letra
-    return preferida.charAt(0).toUpperCase() + preferida.slice(1);
-  };
-
-  const gerarDica = (i: number, qt: number) => {
-    const correta = obterRespostaCorretaPreferida(i);
-    if (!correta) return 'Sem dados.';
-    const palavras = correta.split(/\s+/);
-    const normCor = normalizar(correta).split(/\s+/);
-    const alunoTokens = normalizar(respostaEntrada).split(/\s+/).filter(Boolean);
-    const revealCount = Math.min(qt, palavras.length); // cada clique revela mais uma palavra correta desde o início
-    const exibida = palavras.map((original, idx) => {
-      const norm = normCor[idx];
-      const alunoTem = alunoTokens.includes(norm);
-      if (alunoTem) return original; // já acertou a palavra em qualquer posição
-      if (idx < revealCount) return original; // revelada pela progressão
-      // placeholder proporcional ao tamanho (mantém número de letras para pista de comprimento)
-      return '▁'.repeat(Math.min(original.length, 10));
-    }).join(' ');
-    // Palavras restantes não reveladas nem acertadas
-    const restantes = normCor.filter((w, idx) => !alunoTokens.includes(w) && idx >= revealCount);
-    return `${exibida}${restantes.length ? `  (${restantes.length} palavra(s) faltando)` : ''}`;
-  };
+  // Helpers de dica e resposta correta movidos para utils/scoring
 
   const submeter = (origem: 'voz' | 'manual') => {
   const valor = respostaEntrada;
@@ -595,10 +564,10 @@ export const App: React.FC = () => {
           <button className="btn" type="button" onClick={proximaPergunta}>Próxima pergunta</button>
         </div>
   {revelarQtde > 0 && !mostrarRespostaCorreta && (
-          <div className="hint-box">Dica: {gerarDica(indice, revelarQtde)}</div>
+          <div className="hint-box">Dica: {gerarDica({ deck: getCurrentDeck(), respostasCorretas, usandoDeckImportado, indice, qt: revelarQtde, respostaEntrada })}</div>
         )}
         {mostrarRespostaCorreta && (
-          <div className="answer-box">Resposta correta: <strong>{obterRespostaCorretaPreferida(indice)}</strong></div>
+          <div className="answer-box">Resposta correta: <strong>{obterRespostaCorretaPreferida(getCurrentDeck(), respostasCorretas, usandoDeckImportado, indice)}</strong></div>
         )}
       </section>
       {resultado && (
