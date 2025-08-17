@@ -121,15 +121,15 @@ export const App: React.FC = () => {
   const [ultimoTempoRespostaMs, setUltimoTempoRespostaMs] = useState<number | null>(null);
   const [mostrarRespostaCorreta, setMostrarRespostaCorreta] = useState(false);
   const [revelarQtde, setRevelarQtde] = useState(0); // letras reveladas na dica
+  const [sonsAtivos, setSonsAtivos] = useState(true);
+  const [audioPronto, setAudioPronto] = useState(false);
 
   useEffect(() => {
-    // Sons embutidos base64 (dois beeps curtos diferentes)
+    // Sons embutidos base64 (curtos). Mantemos como fallback se Web Audio indisponível.
     const SUCCESS_BEEP = 'data:audio/wav;base64,UklGRqgAAABXQVZFZm10IBAAAAABAAEAIlYAACJWAAABAAgAZGF0YYAAAAAAAP8A/wD///8A/wD/AP8A//8A////AP8A/wD///8AAAAA';
     const ERROR_BEEP = 'data:audio/wav;base64,UklGRqgAAABXQVZFZm10IBAAAAABAAEAIlYAACJWAAABAAgAZGF0YQAAAAAA////AP//AP8A//8A////AP8A//8A////AP8A//8A';
     audioOkRef.current = new Audio(SUCCESS_BEEP);
     audioErroRef.current = new Audio(ERROR_BEEP);
-    audioOkRef.current.preload = 'auto';
-    audioErroRef.current.preload = 'auto';
   }, []);
 
   // Controle de primeira interação para evitar bloqueio de autoplay em mobile
@@ -145,34 +145,44 @@ export const App: React.FC = () => {
   }, []);
 
   // Fallback via Web Audio API caso play() rejeite (ex: bloqueio de autoplay)
-  const safePlay = (audio: HTMLAudioElement | null, fallbackFreq: number) => {
-    if (!audio) return;
+  // Gera um ou mais tons sucessivos via Web Audio (se disponível)
+  const gerarTons = (padrao: number[]) => {
+    if (!sonsAtivos) return;
+    if (!interagiuRef.current) return; // precisa ter interação antes
+    if (typeof window === 'undefined') return;
+    const Ctx: any = (window as any).AudioContext || (window as any).webkitAudioContext;
+    if (!Ctx) return;
     try {
-      const p = audio.play();
-      if (p && typeof p.then === 'function') {
-        p.catch(() => {
-          if (!interagiuRef.current) return; // aguarda interação do usuário
-          try {
-            const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.frequency.value = fallbackFreq;
-            osc.type = 'sine';
-            osc.connect(gain);
-            gain.connect(ctx.destination);
-            gain.gain.setValueAtTime(0.001, ctx.currentTime);
-            gain.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + 0.01);
-            gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.25);
-            osc.start();
-            osc.stop(ctx.currentTime + 0.26);
-          } catch (e) {
-            // silencia
-          }
-        });
-      }
+      const ctx = new Ctx();
+      let t = ctx.currentTime;
+      padrao.forEach(freq => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, t);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(0.35, t + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.28);
+        osc.start(t);
+        osc.stop(t + 0.3);
+        t += 0.18; // pequeno offset para sequência
+      });
+      setAudioPronto(true);
     } catch {
-      // ignorar
+      // fallback ignorado
     }
+  };
+
+  const safePlay = (tipo: 'ok' | 'erro') => {
+    if (!sonsAtivos) return;
+    // Primeiro tenta Web Audio (melhor latência). Padrões diferentes:
+    if (tipo === 'ok') gerarTons([880, 1320]); else gerarTons([220, 180]);
+    // Também dispara <audio> básico como redundância (se permitido)
+    const el = tipo === 'ok' ? audioOkRef.current : audioErroRef.current;
+    if (!el) return;
+    try { el.currentTime = 0; el.play().catch(() => {/* ignorar */}); } catch {/* */}
   };
 
   const submeter = (origem: 'voz' | 'manual') => {
@@ -181,7 +191,7 @@ export const App: React.FC = () => {
     const res = avaliar(indice, valor);
     setResultado(res);
   setUltimoTempoRespostaMs(Date.now() - inicioPerguntaTs);
-  if (res.correto) safePlay(audioOkRef.current, 880); else safePlay(audioErroRef.current, 220);
+  if (res.correto) safePlay('ok'); else safePlay('erro');
   };
 
   const proximaPergunta = () => {
@@ -207,6 +217,17 @@ export const App: React.FC = () => {
   return (
     <div style={{ padding: 32 }}>
       <h1>Kids Flashcards</h1>
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+        <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 14 }}>
+          <input type="checkbox" checked={sonsAtivos} onChange={e => setSonsAtivos(e.target.checked)} /> Som
+        </label>
+        <button type="button" onClick={() => { interagiuRef.current = true; safePlay('ok'); }} style={{ fontSize: 12 }}>
+          Testar som
+        </button>
+        {!audioPronto && sonsAtivos && (
+          <span style={{ fontSize: 12, color: '#666' }}>Clique em "Testar som" para ativar áudio (mobile).</span>
+        )}
+      </div>
       <MascoteTTS texto={perguntas[indice]} />
       <p>Pergunta: {perguntas[indice]}</p>
       {process.env.NODE_ENV === 'test' && (
