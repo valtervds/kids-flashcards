@@ -422,23 +422,31 @@ export const App: React.FC = () => {
         console.log('[publishDeckFirebase] deck atualizado', { cloudId });
         appendPublishLog(deck.id, `Deck atualizado (id=${cloudId}).`);
       }
-  if (deck.audio && cloudStorageRef.current) {
-        const blob = await loadAudioBlob(deck.audio.key);
-        if (blob) {
-          try {
-            appendPublishLog(deck.id, 'Enviando áudio...');
-            const up = await uploadDeckAudio(cloudStorageRef.current, cloudId!, blob, deck.audio.name);
-            await updateDeckDoc(cloudDbRef.current, cloudId!, { audioMeta: { fileName: deck.audio.name, storagePath: up.storagePath, contentType: deck.audio.type, size: deck.audio.size }, published: true });
-            console.log('[publishDeckFirebase] audio enviado', { cloudId, storagePath: up.storagePath });
-            appendPublishLog(deck.id, 'Áudio enviado e metadata salva.');
-          } catch (err:any) {
-            console.error('[publishDeckFirebase] falha upload audio', err);
-            appendPublishLog(deck.id, 'Falha upload áudio: ' + (err?.code || err?.message || String(err)));
+      if (deck.audio) {
+        // Caso 1: áudio local (blob em IndexedDB) -> upload
+        const isRemoteUrl = deck.audio.key.startsWith('http');
+        if (!isRemoteUrl && cloudStorageRef.current) {
+          const blob = await loadAudioBlob(deck.audio.key);
+          if (blob) {
+            try {
+              appendPublishLog(deck.id, 'Enviando áudio...');
+              const up = await uploadDeckAudio(cloudStorageRef.current, cloudId!, blob, deck.audio.name);
+              await updateDeckDoc(cloudDbRef.current, cloudId!, { audioMeta: { fileName: deck.audio.name, storagePath: up.storagePath, contentType: deck.audio.type, size: deck.audio.size }, published: true });
+              console.log('[publishDeckFirebase] audio enviado', { cloudId, storagePath: up.storagePath });
+              appendPublishLog(deck.id, 'Áudio enviado e metadata salva.');
+            } catch (err:any) {
+              console.error('[publishDeckFirebase] falha upload audio', err);
+              appendPublishLog(deck.id, 'Falha upload áudio: ' + (err?.code || err?.message || String(err)));
+            }
+          } else {
+            appendPublishLog(deck.id, 'Áudio local não encontrado para upload (IndexedDB) chave '+ deck.audio.key);
           }
-        } else {
-          appendPublishLog(deck.id, 'Áudio não encontrado no storage local (IndexedDB) para chave '+ deck.audio.key);
+        } else if (isRemoteUrl) {
+          // Caso 2: URL direta já hospedada -> apenas salva metadata apontando para downloadUrl
+            await updateDeckDoc(cloudDbRef.current, cloudId!, { audioMeta: { fileName: deck.audio.name, storagePath: deck.audio.key, downloadUrl: deck.audio.downloadUrl || deck.audio.key, contentType: deck.audio.type, size: deck.audio.size }, published: true });
+            appendPublishLog(deck.id, 'Áudio remoto (URL) referenciado sem upload.');
         }
-  }
+      }
       setFirebaseStatus('Publicado');
       console.log('[publishDeckFirebase] finalizado com sucesso');
       appendPublishLog(deck.id, 'Publicação concluída com sucesso.');
