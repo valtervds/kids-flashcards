@@ -261,11 +261,14 @@ export const App: React.FC = () => {
       setFirebaseStatus('Conectando...');
       const { initFirebaseApp, ensureAnonymousAuth } = await import('./firebase/app');
       const { listenPublishedDecks } = await import('./firebase/decksRepo');
+      console.log('[firebase:init] config', firebaseEnv);
       const { db, auth, storage } = await initFirebaseApp(firebaseEnv as any);
       const uid = await ensureAnonymousAuth(auth);
+      console.log('[firebase:init] anon uid', uid);
       setFirebaseUid(uid);
       cloudDbRef.current = db; cloudStorageRef.current = storage;
       listenPublishedDecks(db, (list: any[]) => {
+        console.log('[firebase:listener] published decks snapshot', list.length);
         const mapped: Deck[] = list.map((d: any) => ({ id: d.id, name: d.name, active: true, createdAt: Date.now(), cards: d.cards || [], published: d.published, cloudId: d.id, audio: d.audioMeta ? { name: d.audioMeta.fileName, size: d.audioMeta.size||0, type: d.audioMeta.contentType||'audio/mpeg', key: d.audioMeta.storagePath } : undefined }));
         setCloudDecks(mapped);
       });
