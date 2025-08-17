@@ -247,7 +247,7 @@ export const App: React.FC = () => {
     storageBucket: safeEnv('VITE_FB_STORAGE_BUCKET'),
   };
   const firebaseAvailable = !!firebaseEnv.apiKey && process.env.NODE_ENV !== 'test';
-  const [firebaseEnabled, setFirebaseEnabled] = useState(false);
+  const [firebaseEnabled, setFirebaseEnabled] = useState<boolean>(() => { try { return localStorage.getItem('fb.enabled') === '1'; } catch { return false; } });
   const [firebaseStatus, setFirebaseStatus] = useState('');
   const [firebaseUid, setFirebaseUid] = useState<string | null>(null);
   const cloudDbRef = useRef<any>(null);
@@ -272,6 +272,14 @@ export const App: React.FC = () => {
     } catch (e) { console.warn(e); setFirebaseStatus('Erro init'); }
   };
   useEffect(()=> { if (firebaseEnabled) initFirebaseFull(); }, [firebaseEnabled]);
+  useEffect(()=> { try { localStorage.setItem('fb.enabled', firebaseEnabled? '1':'0'); } catch {/* ignore */} }, [firebaseEnabled]);
+  // Flush pendente ao fechar/ocultar
+  useEffect(() => {
+    const handler = () => { if (firebaseEnabled && firebaseUid && cloudDbRef.current) { flushRemote(cloudDbRef.current, firebaseUid); } };
+    window.addEventListener('beforeunload', handler);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') handler(); });
+    return () => { window.removeEventListener('beforeunload', handler); }; // visibilitychange não precisa remover
+  }, [firebaseEnabled, firebaseUid]);
 
   // Listener progresso remoto (decks cloud)
   useEffect(() => {
@@ -293,11 +301,13 @@ export const App: React.FC = () => {
         if (remoteUnsubsRef.current[id]) return;
         const unsub = listenProgress(cloudDbRef.current!, firebaseUid, id, doc => {
           setProgress(prev => {
-            const deckKey = 'cloud:' + id;
             const perCard = doc.perCard || {};
             const mapped: Record<number, number[]> = {} as any;
             Object.keys(perCard).forEach(k => { mapped[Number(k)] = perCard[k].scores || []; });
-            return { ...prev, [deckKey]: mapped };
+            // tenta achar deck local associado
+            const localDeck = decks.find(d => d.cloudId === id);
+            if (!localDeck) return { ...prev, [id]: mapped }; // fallback id cloud
+            return { ...prev, [localDeck.id]: mapped };
           });
         });
         remoteUnsubsRef.current[id] = unsub;
@@ -433,7 +443,7 @@ export const App: React.FC = () => {
       return { ...prev, [id]: { ...cur, attempts: cur.attempts + 1, correct: cur.correct + (res.correto ? 1 : 0) } };
     });
     // registrar progresso por cartão
-    const deckKey = usandoDeckImportado ? currentDeckId : 'default';
+  const deckKey = usandoDeckImportado ? currentDeckId : (getCurrentDeck()?.cloudId ? getCurrentDeck()!.id : 'default');
     setProgress(prev => {
       const d = prev[deckKey] || {};
       const arr = d[indice] ? [...d[indice]] : [];
@@ -541,7 +551,7 @@ export const App: React.FC = () => {
             <button className="btn btn-secondary" type="button" onClick={()=> setMostrarHistorico(m => !m)}>{mostrarHistorico ? 'Ocultar histórico' : 'Histórico'}</button>
           </div>
           {mostrarHistorico && (() => {
-            const deckKey = usandoDeckImportado ? currentDeckId : 'default';
+            const deckKey = usandoDeckImportado ? currentDeckId : (getCurrentDeck()?.cloudId ? getCurrentDeck()!.id : 'default');
             const arr = (progress[deckKey]?.[indice]) || [];
             const media = arr.length ? (arr.reduce((a,b)=>a+b,0)/arr.length).toFixed(2) : '-';
             return (
