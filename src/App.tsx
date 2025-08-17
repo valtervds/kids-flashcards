@@ -253,6 +253,7 @@ export const App: React.FC = () => {
   const cloudDbRef = useRef<any>(null);
   const cloudStorageRef = useRef<any>(null);
   const [cloudDecks, setCloudDecks] = useState<Deck[]>([]);
+  const remoteUnsubsRef = useRef<Record<string, () => void>>({});
   const initFirebaseFull = async () => {
     if (!firebaseAvailable || cloudDbRef.current) return;
     try {
@@ -271,6 +272,38 @@ export const App: React.FC = () => {
     } catch (e) { console.warn(e); setFirebaseStatus('Erro init'); }
   };
   useEffect(()=> { if (firebaseEnabled) initFirebaseFull(); }, [firebaseEnabled]);
+
+  // Listener progresso remoto (decks cloud)
+  useEffect(() => {
+    if (!firebaseEnabled || !firebaseUid || !cloudDbRef.current) {
+      Object.values(remoteUnsubsRef.current).forEach(u => u());
+      remoteUnsubsRef.current = {};
+      return;
+    }
+    (async () => {
+      const { listenProgress } = await import('./firebase/progressRepo');
+      const ids = new Set<string>();
+      cloudDecks.forEach(d => d.cloudId && ids.add(d.cloudId));
+      decks.forEach(d => d.cloudId && ids.add(d.cloudId));
+      // remove não usados
+      for (const id of Object.keys(remoteUnsubsRef.current)) {
+        if (!ids.has(id)) { remoteUnsubsRef.current[id](); delete remoteUnsubsRef.current[id]; }
+      }
+      ids.forEach(id => {
+        if (remoteUnsubsRef.current[id]) return;
+        const unsub = listenProgress(cloudDbRef.current!, firebaseUid, id, doc => {
+          setProgress(prev => {
+            const deckKey = 'cloud:' + id;
+            const perCard = doc.perCard || {};
+            const mapped: Record<number, number[]> = {} as any;
+            Object.keys(perCard).forEach(k => { mapped[Number(k)] = perCard[k].scores || []; });
+            return { ...prev, [deckKey]: mapped };
+          });
+        });
+        remoteUnsubsRef.current[id] = unsub;
+      });
+    })();
+  }, [firebaseEnabled, firebaseUid, cloudDbRef.current, cloudDecks, decks]);
   const publishDeckFirebase = async (deck: Deck) => {
     if (!firebaseEnabled) return alert('Firebase não habilitado');
     if (!cloudDbRef.current) return alert('Firebase não pronto');
@@ -411,6 +444,7 @@ export const App: React.FC = () => {
     // Enfileira update remoto (debounce simples)
     if (firebaseEnabled && getCurrentDeck()?.cloudId && firebaseUid && cloudDbRef.current) {
       queueRemoteProgressUpdate(getCurrentDeck()!.cloudId!, indice, res.correto ? 5 : res.score, res.correto);
+  scheduleFlush(cloudDbRef.current, firebaseUid);
     }
   };
 
@@ -427,6 +461,7 @@ export const App: React.FC = () => {
     });
     if (firebaseEnabled && getCurrentDeck()?.cloudId && firebaseUid && cloudDbRef.current && (indice + 1) % perguntas.length === 0) {
       queueSessionIncrement(getCurrentDeck()!.cloudId!);
+  scheduleFlush(cloudDbRef.current, firebaseUid);
     }
   };
 
@@ -758,6 +793,7 @@ export const App: React.FC = () => {
       {view === 'settings' && <SettingsView />}
       {view === 'decks' && <DecksView />}
       <footer>Kids Flashcards · Interface melhorada · v1</footer>
+  {firebaseEnabled && <div style={{position:'fixed',bottom:4,right:8,fontSize:12,opacity:0.8}}>Cloud {remoteQueue.length||remoteSessionIncrement.length? '⏳':'✔'}</div>}
       <audio ref={audioOkRef} style={{ display: 'none' }} aria-hidden="true" />
       <audio ref={audioErroRef} style={{ display: 'none' }} aria-hidden="true" />
     </div>
@@ -802,4 +838,8 @@ const queueRemoteProgressUpdate = (deckId:string, card:number, score:number, cor
   // db/uid captured via closure? We expose schedule via window hook (attached in App runtime) - simplified approach omitted here.
 };
 const queueSessionIncrement = (deckId:string) => { remoteSessionIncrement.push({ deckId }); };
+
+// ------- Hook de listener de progresso remoto (injetado dinamicamente) -------
+// Colocamos fora para evitar redefinições; a lógica de uso está dentro do componente via efeito adicional abaixo.
+
 
