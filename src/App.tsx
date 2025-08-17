@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { initFirebase, loadCloud, saveCloud } from './cloudSync'; // legado sync simples
+// Removido: legado cloudSync substituído por fluxo Firebase moderno
 import { resolveFirebaseConfig } from './firebase/defaultConfig';
 // Fase 1 Firebase infra (usado progressivamente). Variáveis esperadas via Vite env:
 // import.meta.env.VITE_FB_API_KEY etc. Integração completa ocorrerá em fases.
@@ -164,79 +164,7 @@ export const App: React.FC = () => {
   useEffect(() => { try { localStorage.setItem('deck.progress', JSON.stringify(progress)); } catch { /* ignore */ } }, [progress]);
   const [mostrarHistorico, setMostrarHistorico] = useState(false);
   // --------- Cloud Sync State ---------
-  interface CloudSettings { enabled: boolean; userId: string; apiKey: string; authDomain: string; projectId: string; lastSync?: number; auto?: boolean; }
-  const loadCloudSettings = (): CloudSettings => { try { const raw = localStorage.getItem('cloud.settings'); if (raw) return JSON.parse(raw); } catch { /* ignore */ } return { enabled:false, userId:'', apiKey:'', authDomain:'', projectId:'', auto:false }; };
-  const [cloudCfg, setCloudCfg] = useState<CloudSettings>(loadCloudSettings);
-  useEffect(()=> { try { localStorage.setItem('cloud.settings', JSON.stringify(cloudCfg)); } catch {/* */} }, [cloudCfg]);
-  const [cloudStatus, setCloudStatus] = useState<string>('');
-  const dbRef = useRef<any>(null);
-  const localChangeRef = useRef<number>(0);
-  if (localChangeRef.current === 0) {
-    try { const v = localStorage.getItem('cloud.localChange'); localChangeRef.current = v ? parseInt(v) : Date.now(); } catch { localChangeRef.current = Date.now(); }
-  }
-  const markLocalChange = () => { localChangeRef.current = Date.now(); try { localStorage.setItem('cloud.localChange', String(localChangeRef.current)); } catch {/* */} };
-  const ensureDb = () => {
-    if (!cloudCfg.enabled) return null;
-    if (!dbRef.current) {
-      try { dbRef.current = initFirebase({ apiKey: cloudCfg.apiKey, authDomain: cloudCfg.authDomain, projectId: cloudCfg.projectId }); } catch (e) { console.warn(e); }
-    }
-    return dbRef.current;
-  };
-  const performUpload = async () => {
-    const db = ensureDb(); if (!db || !cloudCfg.userId) { setCloudStatus('Config incompleta'); return; }
-    setCloudStatus('Enviando...');
-    await saveCloud(db, cloudCfg.userId, { decks, stats, progress, updatedAt: Date.now() });
-    setCloudCfg(cfg => ({ ...cfg, lastSync: Date.now() }));
-    setCloudStatus('Sincronizado (upload)');
-  };
-  const performDownload = async () => {
-    const db = ensureDb(); if (!db || !cloudCfg.userId) { setCloudStatus('Config incompleta'); return; }
-    setCloudStatus('Carregando...');
-    const data = await loadCloud(db, cloudCfg.userId);
-    if (data) {
-      // merge naive: replace local
-      setDecks(data.decks || []);
-      setStats(data.stats || {});
-      setProgress(data.progress || {});
-      setCloudStatus('Dados baixados');
-      markLocalChange();
-    } else setCloudStatus('Nenhum dado remoto');
-    setCloudCfg(cfg => ({ ...cfg, lastSync: Date.now() }));
-  };
-  // auto-sync lightweight (only on mount & when decks/stats/progress change, debounce)
-  useEffect(()=> {
-    if (!cloudCfg.enabled || !cloudCfg.auto) return;
-    const t = setTimeout(()=> { performUpload(); }, 1200);
-    return () => clearTimeout(t);
-  }, [decks, stats, progress]);
-  // track local modifications
-  useEffect(()=> { if(!cloudCfg.enabled) return; markLocalChange(); }, [decks, stats, progress]);
-  // initial sync decision: download if remote newer, else (optionally) upload
-  useEffect(()=> {
-    const run = async () => {
-      if (!cloudCfg.enabled || !cloudCfg.userId) return;
-      const db = ensureDb(); if (!db) return;
-      try {
-        setCloudStatus(s => s || 'Verificando...');
-        const data = await loadCloud(db, cloudCfg.userId);
-        if (!data) { setCloudStatus('Sem remoto (primeiro upload esperado)'); return; }
-        if (data.updatedAt > localChangeRef.current) {
-          setDecks(data.decks || []);
-          setStats(data.stats || {});
-          setProgress(data.progress || {});
-          setCloudStatus('Atualizado do remoto');
-          markLocalChange();
-        } else if (cloudCfg.auto) {
-          // local é mais novo e auto está on: sobe
-          await performUpload();
-        } else {
-          setCloudStatus('Local mais novo (aguardando upload manual)');
-        }
-      } catch (e) { console.warn(e); setCloudStatus('Falha sync inicial'); }
-    };
-    run();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cloudCfg.enabled, cloudCfg.userId]);
+  // Cloud sync legado removido
 
   // --------- Firebase Cloud (publicação decks) ---------
   const safeEnv = (k: string) => {
