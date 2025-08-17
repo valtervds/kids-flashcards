@@ -20,15 +20,15 @@ interface Params {
   firebaseEnabled: boolean;
   firebaseUid: string | null;
   cloudDbRef: React.MutableRefObject<any>;
-  queueRemoteProgressUpdate: (deckId: string, card: number, score: number, correct: boolean) => void;
-  scheduleFlush: (db: any, uid: string) => void;
+  queueAnswer: (deckId:string, card:number, score:number, correct:boolean) => void;
+  scheduleFlush: () => void;
 }
 
 export function useAnswerEvaluation(p: Params) {
   const {
     getCurrentDeck, usandoDeckImportado, indice, avaliarFallback, safePlay,
     recordAttempt, setProgress, firebaseEnabled, firebaseUid, cloudDbRef,
-    queueRemoteProgressUpdate, scheduleFlush
+  queueAnswer, scheduleFlush
   } = p;
 
   const [resultado, setResultado] = useState<EvaluationResult | null>(null);
@@ -73,11 +73,11 @@ export function useAnswerEvaluation(p: Params) {
       return { ...prev, [deckKey]: { ...d, [indice]: arr } };
     });
     if (firebaseEnabled && getCurrentDeck()?.cloudId && firebaseUid && cloudDbRef.current) {
-      queueRemoteProgressUpdate(getCurrentDeck()!.cloudId!, indice, res.correto ? 5 : res.score, res.correto);
-      scheduleFlush(cloudDbRef.current, firebaseUid);
+      queueAnswer(getCurrentDeck()!.cloudId!, indice, res.correto ? 5 : res.score, res.correto);
+      scheduleFlush();
     }
     return res;
-  }, [usandoDeckImportado, evaluateImported, avaliarFallback, indice, inicioPerguntaTs, safePlay, recordAttempt, setProgress, firebaseEnabled, firebaseUid, cloudDbRef, queueRemoteProgressUpdate, scheduleFlush, getCurrentDeck]);
+  }, [usandoDeckImportado, evaluateImported, avaliarFallback, indice, inicioPerguntaTs, safePlay, recordAttempt, setProgress, firebaseEnabled, firebaseUid, cloudDbRef, queueAnswer, scheduleFlush, getCurrentDeck]);
 
   const resetForNextQuestion = useCallback(() => {
     setResultado(null);

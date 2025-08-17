@@ -16,6 +16,7 @@ import { useStats } from './features/study/hooks/useStats';
 import { useAudioFeedback } from './features/study/hooks/useAudioFeedback';
 import { useAnswerEvaluation } from './features/study/hooks/useAnswerEvaluation';
 import { StudyView as StudyViewExternal } from './features/study/StudyView';
+import { useRemoteProgressQueue } from './features/study/hooks/useRemoteProgressQueue';
 import { DeckImport } from './components/DeckImport';
 // Imports estáticos para evitar falhas de carregamento dinâmico em GitHub Pages (chunks 404)
 import { createDeck, updateDeckDoc, listenPublishedDecks, deleteDeckDoc } from './firebase/decksRepo';
@@ -189,6 +190,8 @@ export const App: React.FC = () => {
   const [cloudDecks, setCloudDecks] = useState<Deck[]>([]);
   // Marca quando recebemos o primeiro snapshot (evita race de estudo antes de carregar)
   const [cloudDecksLoaded, setCloudDecksLoaded] = useState(false);
+  // Hook de fila remota (lote 6) - precisa vir antes dos efeitos que o utilizam
+  const remoteQueueApi = useRemoteProgressQueue({ enabled: firebaseEnabled, dbRef: cloudDbRef, userId: firebaseUid });
   // Efeito de migração de seleção para id cloud quando disponível
   useEffect(() => {
     if (!cloudDecksLoaded) return;
@@ -290,11 +293,11 @@ export const App: React.FC = () => {
   };
   // Flush pendente ao fechar/ocultar
   useEffect(() => {
-    const handler = () => { if (firebaseEnabled && firebaseUid && cloudDbRef.current) { flushRemote(cloudDbRef.current, firebaseUid); } };
+    const handler = () => { if (firebaseEnabled && firebaseUid && cloudDbRef.current) { remoteQueueApi.flush(); } };
     window.addEventListener('beforeunload', handler);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') handler(); });
     return () => { window.removeEventListener('beforeunload', handler); }; // visibilitychange não precisa remover
-  }, [firebaseEnabled, firebaseUid]);
+  }, [firebaseEnabled, firebaseUid, remoteQueueApi]);
 
   // Listener progresso remoto (decks cloud)
   useEffect(() => {
@@ -399,8 +402,8 @@ export const App: React.FC = () => {
     firebaseEnabled,
     firebaseUid,
     cloudDbRef,
-    queueRemoteProgressUpdate,
-    scheduleFlush
+    queueAnswer: remoteQueueApi.queueAnswer,
+    scheduleFlush: remoteQueueApi.scheduleFlush
   } as any);
   useEffect(() => { setResultado(resultadoHook as any); setUltimoTempoRespostaMs(ultimoTempoHook); }, [resultadoHook, ultimoTempoHook]);
   const submeter = (origem: 'voz' | 'manual') => { submeterHook(respostaEntrada); };
@@ -412,8 +415,8 @@ export const App: React.FC = () => {
     if (perguntas.length && (indice + 1) % perguntas.length === 0) {
       recordSession(usandoDeckImportado ? currentDeckId : 'default');
       if (firebaseEnabled && getCurrentDeck()?.cloudId && firebaseUid && cloudDbRef.current) {
-        queueSessionIncrement(getCurrentDeck()!.cloudId!);
-        scheduleFlush(cloudDbRef.current, firebaseUid);
+        remoteQueueApi.queueSession(getCurrentDeck()!.cloudId!);
+        remoteQueueApi.scheduleFlush();
       }
     }
   };
@@ -747,52 +750,13 @@ export const App: React.FC = () => {
         </div>
       )}
       <footer>Kids Flashcards · Interface melhorada · v1</footer>
-  {firebaseEnabled && <div style={{position:'fixed',bottom:4,right:8,fontSize:12,opacity:0.8}}>Cloud {remoteQueue.length||remoteSessionIncrement.length? '⏳':'✔'}</div>}
+  {firebaseEnabled && <div style={{position:'fixed',bottom:4,right:8,fontSize:12,opacity:0.8}}>Cloud {remoteQueueApi.hasPending()? '⏳':'✔'}</div>}
       <audio ref={audioOkRef} style={{ display: 'none' }} aria-hidden="true" />
       <audio ref={audioErroRef} style={{ display: 'none' }} aria-hidden="true" />
     </div>
   );
 };
 
-// ------- Remote Progress Queue (FireStore writes debounce) -------
-let remoteQueue: { deckId:string; card:number; score:number; correct:boolean }[] = [];
-let remoteSessionIncrement: { deckId:string }[] = [];
-let flushTimer: any = null;
-const flushRemote = async (db:any, userId:string) => {
-  if (!remoteQueue.length && !remoteSessionIncrement.length) return;
-  const grouped: Record<string, {answers:{card:number;score:number;correct:boolean}[]; sessions:number}> = {};
-  remoteQueue.forEach(r => { grouped[r.deckId] = grouped[r.deckId] || { answers:[], sessions:0 }; grouped[r.deckId].answers.push(r); });
-  remoteSessionIncrement.forEach(r => { grouped[r.deckId] = grouped[r.deckId] || { answers:[], sessions:0 }; grouped[r.deckId].sessions += 1; });
-  remoteQueue = []; remoteSessionIncrement = [];
-  for (const deckId of Object.keys(grouped)) {
-    const g = grouped[deckId];
-    await updateProgress(db, userId, deckId, cur => {
-      const perCard = { ...(cur.perCard||{}) } as any;
-      let attemptsTotal = cur.attemptsTotal || 0;
-      let correctTotal = cur.correctTotal || 0;
-      g.answers.forEach(a => {
-        const slot = perCard[a.card] || { scores:[], attempts:0, correct:0 };
-        slot.scores = [...slot.scores, a.score]; if (slot.scores.length>50) slot.scores = slot.scores.slice(-50);
-        slot.attempts += 1; if (a.correct) slot.correct += 1;
-        perCard[a.card] = slot;
-        attemptsTotal += 1; if (a.correct) correctTotal += 1;
-      });
-      const sessions = (cur.sessions||0) + g.sessions;
-      return { perCard, attemptsTotal, correctTotal, sessions } as any;
-    });
-  }
-};
-const scheduleFlush = (db:any, uid:string) => {
-  if (flushTimer) return;
-  flushTimer = setTimeout(async () => { const ref = db; const id = uid; flushTimer = null; await flushRemote(ref, id); }, 1000);
-};
-const queueRemoteProgressUpdate = (deckId:string, card:number, score:number, correct:boolean) => {
-  remoteQueue.push({ deckId, card, score, correct });
-  // db/uid captured via closure? We expose schedule via window hook (attached in App runtime) - simplified approach omitted here.
-};
-const queueSessionIncrement = (deckId:string) => { remoteSessionIncrement.push({ deckId }); };
-
-// ------- Hook de listener de progresso remoto (injetado dinamicamente) -------
-// Colocamos fora para evitar redefinições; a lógica de uso está dentro do componente via efeito adicional abaixo.
+// (Fila remota agora encapsulada em useRemoteProgressQueue)
 
 
