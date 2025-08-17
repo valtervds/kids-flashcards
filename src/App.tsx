@@ -1,6 +1,8 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { initFirebase, loadCloud, saveCloud } from './cloudSync';
+import { initFirebase, loadCloud, saveCloud } from './cloudSync'; // legado sync simples
+// Fase 1 Firebase infra (usado progressivamente). Variáveis esperadas via Vite env:
+// import.meta.env.VITE_FB_API_KEY etc. Integração completa ocorrerá em fases.
 import { MascoteTTS } from './components/MascoteTTS';
 import { Stars } from './components/Stars';
 import { avaliar, respostasCorretas, normalizar } from './evaluation';
