@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 
-interface MascoteTTSProps { texto: string; }
+interface MascoteTTSProps { texto: string; showVoiceSelector?: boolean; }
 
-export const MascoteTTS: React.FC<MascoteTTSProps> = ({ texto }) => {
+export const MascoteTTS: React.FC<MascoteTTSProps> = ({ texto, showVoiceSelector = true }) => {
   const [suportaTTS, setSuportaTTS] = useState<boolean>(false);
   const [falando, setFalando] = useState(false);
   const [vozLista, setVozLista] = useState<SpeechSynthesisVoice[]>([]);
@@ -115,6 +115,23 @@ export const MascoteTTS: React.FC<MascoteTTSProps> = ({ texto }) => {
     vozRef.current = encontrada || null;
   };
 
+  // Modo compacto: somente ícone (quando showVoiceSelector = false)
+  if (!showVoiceSelector) {
+    return (
+      <button
+        onClick={() => (falando ? parar() : falar())}
+        disabled={!suportaTTS}
+        title={falando ? 'Parar' : 'Ouvir'}
+        aria-label={falando ? 'Parar leitura' : 'Ouvir pergunta'}
+        style={{
+          width:48, height:48, borderRadius:'50%', border:'1px solid #2f4d70', background: falando ? '#1d4068' : '#162b44', color:'#fff', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', fontSize:22
+        }}
+      >
+        {falando ? '■' : '🔊'}
+      </button>
+    );
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 420 }}>
       <div style={{ display: 'flex', gap: 8 }}>
@@ -123,7 +140,7 @@ export const MascoteTTS: React.FC<MascoteTTSProps> = ({ texto }) => {
         </button>
         <button onClick={parar} disabled={!falando} aria-label="Parar áudio">Parar</button>
       </div>
-      {suportaTTS && vozLista.length > 0 && (
+  {showVoiceSelector && suportaTTS && vozLista.length > 0 && (
         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
           <label style={{ fontSize: 12 }}>Voz: </label>
           <select

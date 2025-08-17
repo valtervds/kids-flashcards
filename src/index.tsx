@@ -1,6 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import "./global.css";
 
 console.log('[index.tsx] carregando aplicação');
 const container = document.getElementById("root");
