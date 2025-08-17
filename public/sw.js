@@ -1,8 +1,10 @@
 const CACHE = 'kids-flashcards-v1';
+// Detect base path (GitHub Pages subdirectory) from service worker scope
+const BASE = (self.registration && self.registration.scope) ? new URL(self.registration.scope).pathname.replace(/\/$/, '') : '';
 const CORE_ASSETS = [
-  '/',
-  '/index.html',
-  '/manifest.webmanifest'
+  BASE + '/',
+  BASE + '/index.html',
+  BASE + '/manifest.webmanifest'
 ];
 
 self.addEventListener('install', (e) => {
@@ -25,6 +27,6 @@ self.addEventListener('fetch', (e) => {
       const copy = fetchRes.clone();
       caches.open(CACHE).then(c => c.put(req, copy));
       return fetchRes;
-    }).catch(() => caches.match('/'))) // fallback root
+  }).catch(() => caches.match(BASE + '/'))) // fallback root respecting base path
   );
 });
