@@ -11,11 +11,15 @@
     <div id="root"></div>
   <script type="module" src="./index.tsx"></script>
   <script>
-    if ('serviceWorker' in navigator) {
+    // Desativa SW em localhost para evitar servir bundle antigo que gera ReferenceError de variáveis
+    if (location.hostname !== 'localhost' && 'serviceWorker' in navigator) {
       window.addEventListener('load', () => {
-  // usar caminho relativo para funcionar em GitHub Pages subpath
-  navigator.serviceWorker.register('./sw.js').then(r => console.log('[SW] registrado', r.scope)).catch(e => console.warn('[SW] erro', e));
+        navigator.serviceWorker.register('./sw.js').then(r => console.log('[SW] registrado', r.scope)).catch(e => console.warn('[SW] erro', e));
       });
+    } else {
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(r => r.unregister()));
+      }
     }
   </script>
   </body>

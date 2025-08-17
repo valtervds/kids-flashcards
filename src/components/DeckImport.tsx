@@ -85,6 +85,8 @@ export const DeckImport: React.FC<DeckImportProps> = ({ onLoad, hasDeck, onClear
           type="file"
           accept=".json,.csv,application/json,text/csv"
           style={{ display: 'none' }}
+            aria-label="Selecionar arquivo de importação (JSON ou CSV)"
+            title="Importar baralho (JSON ou CSV)"
           onChange={onChange}
         />
         <button className="btn" type="button" onClick={() => fileRef.current?.click()}>Selecionar arquivo</button>

@@ -15,11 +15,22 @@ Testar instalação:
 3. Abrir no Chrome/Edge e usar "Instalar app".
 
 ## Deploy GitHub Pages
-Workflow .github/workflows/deploy.yml publica em Pages ao push na branch main.
-Após primeiro run:
-1. Settings > Pages selecione "GitHub Actions".
-2. Aguardar publicação.
+Configurado via workflow `.github/workflows/deploy-pages.yml`.
+
+Passos:
+1. Verifique que `base` em `vite.config.ts` está `/kids-flashcards/` (ajuste se o repositório tiver outro nome).
+2. Ative em Settings > Pages > Source: "GitHub Actions" (apenas primeira vez).
+3. Push na branch `main` dispara build e deploy automático.
+4. URL final: `https://<seu-usuario>.github.io/kids-flashcards/`.
+
+Re-disparo manual: aba Actions > Deploy GitHub Pages > Run workflow.
+
+Observações:
+- Service Worker não registra em `localhost` para evitar cache antigo em dev.
+- Em produção (Pages) o SW é registrado para PWA/offline.
 
 ## Próximos Passos
-- Pontuação, feedback resposta, persistência IndexedDB.
-- A11y e testes automatizados.
+- Refinar estatísticas de sessão.
+- Melhorar divisão de chunks (reduzir vendor ~700KB).
+- Otimizar Firebase load sob demanda.
+- Mais testes (auto-seleção de deck, fluxo de áudio).

@@ -11,7 +11,9 @@ export default {
   publicDir: '../public',
   build: {
     outDir: '../dist',
-    emptyOutDir: true
+  emptyOutDir: true,
+  sourcemap: true,
+  minify: process.env.VITE_DEBUG_BUILD ? false : 'esbuild'
   },
   server: {
     port: 5173,

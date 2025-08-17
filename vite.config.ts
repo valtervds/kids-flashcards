@@ -9,6 +9,10 @@ export default defineConfig(({ mode }) => ({
   build: {
     outDir: '../dist',
     emptyOutDir: true,
+  // Gera sourcemaps em produção para facilitar depuração de erros apenas quando explicitamente habilitado
+  sourcemap: true,
+  // Permite desativar minificação via env flag VITE_DEBUG_BUILD=true (para mapear variáveis que causam TDZ em produção)
+  minify: process.env.VITE_DEBUG_BUILD ? false : 'esbuild',
   },
   server: { port: 5173 },
 }));

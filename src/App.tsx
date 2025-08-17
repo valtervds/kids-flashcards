@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 // Removido: legado cloudSync substituído por fluxo Firebase moderno
 import { resolveFirebaseConfig } from './firebase/defaultConfig';
 // Fase 1 Firebase infra (usado progressivamente). Variáveis esperadas via Vite env:
@@ -11,11 +11,13 @@ import { Deck, DeckAudioMeta, Flashcard, DeckStats, ProgressMap } from './domain
 import { gerarDica, obterRespostaCorretaPreferida } from './utils/scoring';
 import { useLocalDecks } from './features/decks/useLocalDecks';
 import { useProgress } from './features/study/hooks/useProgress';
-import { useStudySession } from './features/study/hooks/useStudySession';
+import { useStudySession } from './features/study/hooks/useStudySession'; // legacy (some parts moved to useStudyEngine)
 import { useStats } from './features/study/hooks/useStats';
 import { useAudioFeedback } from './features/study/hooks/useAudioFeedback';
-import { useAnswerEvaluation } from './features/study/hooks/useAnswerEvaluation';
-import { StudyView as StudyViewExternal } from './features/study/StudyView';
+import { useAnswerEvaluation } from './features/study/hooks/useAnswerEvaluation'; // still used inside engine
+import { useStudyEngine } from './features/study/hooks/useStudyEngine';
+// Code-splitting StudyView
+const StudyViewExternal = lazy(() => import('./features/study/StudyView').then(m => ({ default: m.StudyView })));
 import { useRemoteProgressQueue } from './features/study/hooks/useRemoteProgressQueue';
 import { DeckImport } from './components/DeckImport';
 // Imports estáticos para evitar falhas de carregamento dinâmico em GitHub Pages (chunks 404)
@@ -136,35 +138,42 @@ export const App: React.FC = () => {
 
   const { stats, recordAttempt, recordSession } = useStats();
 
+  // Estado de decks cloud precisa existir antes de qualquer função que o utilize (evita TDZ)
+  // Cloud decks agora opcional; evitamos acesso durante render inicial para eliminar risco de TDZ em bundle inconsistente
+  const cloudStateRef = useRef<{ decks: Deck[]; loaded: boolean }>({ decks: [], loaded: false });
+  const [cloudTick, setCloudTick] = useState(0); // força re-render quando cloudStateRef muta
+  const cloudDecks = cloudStateRef.current.decks;
+  const cloudDecksLoaded = cloudStateRef.current.loaded;
+
   const [currentDeckId, setCurrentDeckId] = useState<string>('default');
   const getCurrentDeck = () => {
-    if (currentDeckId === 'default') return null;
-    const local = decks.find(d => d.id === currentDeckId);
-    if (local) return local;
-    const remote = cloudDecks.find(d => d.id === currentDeckId);
-    return remote || null;
+    // Defensive against rare TDZ/ordering race in dev/preview with cached chunks
+    try {
+      if (currentDeckId === 'default') return null;
+      return decks.find(d => d.id === currentDeckId) || null; // estudo somente local
+    } catch (e:any) {
+      if (e && e.name === 'ReferenceError') {
+        console.warn('[getCurrentDeck:ReferenceError]', e);
+      } else {
+        console.warn('[getCurrentDeck:error]', e);
+      }
+      return null;
+    }
   };
   const usandoDeckImportado = !!getCurrentDeck();
-  const perguntas = getCurrentDeck() ? getCurrentDeck()!.cards.map(c => c.question) : defaultPerguntas;
+  const perguntas = getCurrentDeck() ? getCurrentDeck()!.cards.map(c => c.question) : defaultPerguntas; // kept for backward compatibility (engine also derives)
 
   // Estados principais
   const [view, setView] = useState<'home' | 'study' | 'settings' | 'decks'>(() => process.env.NODE_ENV === 'test' ? 'study' : 'home');
-  const { indice, setIndice, proxima: proximaPerguntaBase } = useStudySession(perguntas);
-  const [respostaEntrada, setRespostaEntrada] = useState('');
-  const [origemUltimaEntrada, setOrigemUltimaEntrada] = useState<'voz' | 'manual' | null>(null);
-  const [resultado, setResultado] = useState<ReturnType<typeof avaliar> | null>(null);
-  const [autoAvaliarVoz, setAutoAvaliarVoz] = useState(true);
-  const [revelarQtde, setRevelarQtde] = useState(0);
-  const [mostrarRespostaCorreta, setMostrarRespostaCorreta] = useState(false);
+  // (engine movido para após definição de dependências: firebaseEnabled, remoteQueueApi, safePlay, progress)
   const [sonsAtivos, setSonsAtivos] = useState(true);
   const { audioOkRef, audioErroRef, safePlay, audioPronto } = useAudioFeedback(sonsAtivos);
   // Ref simples para marcar primeira interação de áudio
   const primeiraInteracaoRef = useRef(false);
-  const [inicioPerguntaTs, setInicioPerguntaTs] = useState(Date.now());
-  const [ultimoTempoRespostaMs, setUltimoTempoRespostaMs] = useState<number | null>(null);
+  // inicioPerguntaTs agora interno ao engine
   // Histórico de pontuações por deck/cartão via hook dedicado
   const { progress, setProgress } = useProgress();
-  const [mostrarHistorico, setMostrarHistorico] = useState(false);
+  // mostrarHistorico agora controlado pelo engine
   // --------- Cloud Sync State ---------
   // Cloud sync legado removido
 
@@ -187,24 +196,20 @@ export const App: React.FC = () => {
   const [firebaseUid, setFirebaseUid] = useState<string | null>(null);
   const cloudDbRef = useRef<any>(null);
   const cloudStorageRef = useRef<any>(null);
-  const [cloudDecks, setCloudDecks] = useState<Deck[]>([]);
   // Marca quando recebemos o primeiro snapshot (evita race de estudo antes de carregar)
-  const [cloudDecksLoaded, setCloudDecksLoaded] = useState(false);
+  // (migrado para cima para evitar uso antes da inicialização)
+  // Hook de fila remota (lote 6) - precisa vir antes dos efeitos que o utilizam
   // Hook de fila remota (lote 6) - precisa vir antes dos efeitos que o utilizam
   const remoteQueueApi = useRemoteProgressQueue({ enabled: firebaseEnabled, dbRef: cloudDbRef, userId: firebaseUid });
+  // Debug: loga uma única vez para detectar possíveis problemas de ordem em build minificado
+  const loggedRemoteQueueRef = useRef(false);
+  if (!loggedRemoteQueueRef.current) {
+    // eslint-disable-next-line no-console
+    console.log('[debug] remoteQueueApi init', Object.keys(remoteQueueApi));
+    loggedRemoteQueueRef.current = true;
+  }
   // Efeito de migração de seleção para id cloud quando disponível
-  useEffect(() => {
-    if (!cloudDecksLoaded) return;
-    if (currentDeckId === 'default') return;
-    const local: any = decks.find(d => d.id === currentDeckId);
-    if (local && local.cloudId) {
-      const remote = cloudDecks.find(cd => cd.id === local.cloudId);
-      if (remote) {
-        setCurrentDeckId(remote.id);
-        console.log('[deck:migrate] migrado para id cloud', remote.id);
-      }
-    }
-  }, [cloudDecksLoaded, decks, cloudDecks, currentDeckId]);
+  // Migração de id cloud desativada temporariamente enquanto isolamos erro de TDZ
   // Log de publicação por deck (apenas sessão atual)
   const [publishLogs, setPublishLogs] = useState<Record<string,string[]>>({});
   const appendPublishLog = (deckId: string, msg: string) => {
@@ -256,8 +261,9 @@ export const App: React.FC = () => {
       listenPublishedDecks(db, (list: any[]) => {
         console.log('[firebase:listener] published decks snapshot', list.length);
         const mapped: Deck[] = list.map((d: any) => ({ id: d.id, name: d.name, active: true, createdAt: Date.now(), cards: d.cards || [], published: d.published, cloudId: d.id, audio: d.audioMeta ? { name: d.audioMeta.fileName, size: d.audioMeta.size||0, type: d.audioMeta.contentType||'audio/mpeg', key: d.audioMeta.storagePath } : undefined }));
-        setCloudDecks(mapped);
-        setCloudDecksLoaded(true);
+        cloudStateRef.current.decks = mapped;
+        cloudStateRef.current.loaded = true;
+        setCloudTick(t=>t+1);
       }, (err: any) => {
         console.warn('[firebase:listener] decks error', err?.code || err?.message || err);
         (window as any).__FB_DECKS_ERR = err;
@@ -293,7 +299,8 @@ export const App: React.FC = () => {
   };
   // Flush pendente ao fechar/ocultar
   useEffect(() => {
-    const handler = () => { if (firebaseEnabled && firebaseUid && cloudDbRef.current) { remoteQueueApi.flush(); } };
+    if (!remoteQueueApi) return; // proteção extra (não deve ocorrer)
+    const handler = () => { if (firebaseEnabled && firebaseUid && cloudDbRef.current) { try { remoteQueueApi.flush(); } catch (e) { console.warn('[remoteQueue.flush.error]', e); } } };
     window.addEventListener('beforeunload', handler);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') handler(); });
     return () => { window.removeEventListener('beforeunload', handler); }; // visibilitychange não precisa remover
@@ -308,9 +315,8 @@ export const App: React.FC = () => {
     }
     (async () => {
       const ids = new Set<string>();
-      cloudDecks.forEach(d => d.cloudId && ids.add(d.cloudId));
+      cloudStateRef.current.decks.forEach(d => d.cloudId && ids.add(d.cloudId));
       decks.forEach(d => d.cloudId && ids.add(d.cloudId));
-      // remove não usados
       for (const id of Object.keys(remoteUnsubsRef.current)) {
         if (!ids.has(id)) { remoteUnsubsRef.current[id](); delete remoteUnsubsRef.current[id]; }
       }
@@ -321,16 +327,15 @@ export const App: React.FC = () => {
             const perCard = doc.perCard || {};
             const mapped: Record<number, number[]> = {} as any;
             Object.keys(perCard).forEach(k => { mapped[Number(k)] = perCard[k].scores || []; });
-            // tenta achar deck local associado
             const localDeck = decks.find(d => d.cloudId === id);
-            if (!localDeck) return { ...prev, [id]: mapped }; // fallback id cloud
+            if (!localDeck) return { ...prev, [id]: mapped };
             return { ...prev, [localDeck.id]: mapped };
           });
         });
         remoteUnsubsRef.current[id] = unsub;
       });
     })();
-  }, [firebaseEnabled, firebaseUid, cloudDbRef.current, cloudDecks, decks]);
+  }, [firebaseEnabled, firebaseUid, cloudDbRef.current, decks, cloudTick]);
   const publishDeckFirebase = async (deck: Deck) => {
     if (!firebaseEnabled) return alert('Firebase não habilitado');
     if (!cloudDbRef.current) return alert('Firebase não pronto');
@@ -384,62 +389,79 @@ export const App: React.FC = () => {
     }
   };
   // Fallback: enquanto nenhum deck cloud carregado ainda, continua mostrando decks locais ativos
-  const studyDeckSource = firebaseEnabled ? (cloudDecks.length ? cloudDecks : decks.filter(d=> d.active)) : decks.filter(d=> d.active);
+  // Nova abordagem: estudo somente em decks locais (inclui clones de cloud)
+  const studyDeckSource = decks.filter(d => d.active);
+
+  // Se usuário entra em Estudar sem deck selecionado, escolhe primeiro ativo (recupera UX anterior)
+  useEffect(() => {
+    if (view === 'study' && currentDeckId === 'default') {
+      const first = studyDeckSource[0];
+      if (first) {
+        setCurrentDeckId(first.id);
+        // reset estados de estudo
+        setIndice(0);
+        setRespostaEntrada('');
+        setOrigemUltimaEntrada(null);
+        setMostrarRespostaCorreta(false);
+        setRevelarQtde(0);
+      }
+    }
+  }, [view, currentDeckId, studyDeckSource]);
 
   // Áudio agora via hook useAudioFeedback
 
   // Helpers de dica e resposta correta movidos para utils/scoring
 
   // Hook de avaliação extraído (lote 5)
-  const { resultado: resultadoHook, submeter: submeterHook, ultimoTempoRespostaMs: ultimoTempoHook, resetForNextQuestion } = useAnswerEvaluation({
+  // Lógica de próxima pergunta e submissão agora no engine
+  const engine = useStudyEngine({
     getCurrentDeck,
+    defaultPerguntas,
     usandoDeckImportado,
-    indice,
-    avaliarFallback: (i, v) => avaliar(i, v) as any,
-    safePlay,
-    recordAttempt: (deckId, correto) => recordAttempt(deckId, correto),
-    setProgress,
     firebaseEnabled,
     firebaseUid,
     cloudDbRef,
-    queueAnswer: remoteQueueApi.queueAnswer,
-    scheduleFlush: remoteQueueApi.scheduleFlush
-  } as any);
-  useEffect(() => { setResultado(resultadoHook as any); setUltimoTempoRespostaMs(ultimoTempoHook); }, [resultadoHook, ultimoTempoHook]);
-  const submeter = (origem: 'voz' | 'manual') => { submeterHook(respostaEntrada); };
-
-  const proximaPergunta = () => {
-    proximaPerguntaBase();
-    setRespostaEntrada(''); setResultado(null); setMostrarRespostaCorreta(false); setOrigemUltimaEntrada(null);
-    setRevelarQtde(0); setUltimoTempoRespostaMs(null); setInicioPerguntaTs(Date.now()); resetForNextQuestion();
-    if (perguntas.length && (indice + 1) % perguntas.length === 0) {
-      recordSession(usandoDeckImportado ? currentDeckId : 'default');
-      if (firebaseEnabled && getCurrentDeck()?.cloudId && firebaseUid && cloudDbRef.current) {
-        remoteQueueApi.queueSession(getCurrentDeck()!.cloudId!);
-        remoteQueueApi.scheduleFlush();
-      }
-    }
-  };
+    recordAttempt: (deckId, correto) => recordAttempt(deckId, correto),
+    recordSession,
+    setProgress,
+    remoteQueueApi,
+    safePlay
+  });
+  const {
+    indice, setIndice,
+    respostaEntrada, setRespostaEntrada,
+    origemUltimaEntrada, setOrigemUltimaEntrada,
+    resultado,
+    autoAvaliarVoz, setAutoAvaliarVoz,
+    revelarQtde, setRevelarQtde,
+    mostrarRespostaCorreta, setMostrarRespostaCorreta,
+    mostrarHistorico, setMostrarHistorico,
+    ultimoTempoRespostaMs,
+    submeter, proximaPergunta,
+    deckKeyForHistory,
+    obterRespostaCorreta,
+    gerarDicaComputed
+  } = engine as any;
 
   // Auto-avaliar quando chegar voz
   useEffect(() => { /* auto avaliação tratada após final de voz */ }, []);
 
   const Nav = () => (
     <nav className="nav-bar">
-      <button className={view==='home'? 'active':''} onClick={() => setView('home')}>Home</button>
-      <button className={view==='study'? 'active':''} onClick={() => setView('study')}>Estudar</button>
+  <button className={view==='home'? 'active':''} onClick={() => setView('home')}>Home</button>
+  <button className={view==='study'? 'active':''} onClick={() => { setView('study'); }}>Estudar</button>
       <button className={view==='decks'? 'active':''} onClick={() => setView('decks')}>Baralhos</button>
       <button className={view==='settings'? 'active':''} onClick={() => setView('settings')}>Configurações</button>
     </nav>
   );
 
   // StudyView agora componente externo (lote 5). Mantemos lógica de voz e formulário aqui e passamos via props customizadas.
-  const deckKeyForHistory = usandoDeckImportado ? currentDeckId : (getCurrentDeck()?.cloudId ? getCurrentDeck()!.id : 'default');
-  const obterRespostaCorreta = (i:number) => obterRespostaCorretaPreferida(getCurrentDeck(), respostasCorretas, usandoDeckImportado, i);
-  const gerarDicaComputed = (i:number) => gerarDica({ deck: getCurrentDeck(), respostasCorretas, usandoDeckImportado, indice: i, qt: revelarQtde, respostaEntrada });
+  // helpers deckKeyForHistory / obterRespostaCorreta / gerarDicaComputed agora vindos do engine
 
   const StudyView = () => (
     <StudyViewExternal
+      // checkpoint mount
+      {...(process.env.NODE_ENV !== 'production' ? { 'data-checkpoint': 'StudyViewMounted' } : {})}
       perguntas={perguntas}
       indice={indice}
       setIndice={setIndice}
@@ -467,7 +489,7 @@ export const App: React.FC = () => {
       deckKeyForHistory={deckKeyForHistory}
       obterRespostaCorreta={obterRespostaCorreta}
       gerarDicaComputed={gerarDicaComputed}
-      loadingDeck={currentDeckId !== 'default' && !getCurrentDeck() && firebaseEnabled && !cloudDecksLoaded}
+  loadingDeck={false}
   ultimoTempoRespostaMs={ultimoTempoRespostaMs}
   onSimularVoz={(texto) => { setRespostaEntrada(texto); setOrigemUltimaEntrada('voz'); if(autoAvaliarVoz) submeter('voz'); }}
   ReconhecimentoVozSlot={<ReconhecimentoVoz onResultado={(texto, final) => { setRespostaEntrada(texto); setOrigemUltimaEntrada('voz'); if (final && autoAvaliarVoz) submeter('voz'); }} />}
@@ -538,7 +560,7 @@ export const App: React.FC = () => {
     const [newDeckName, setNewDeckName] = useState('');
     const [editingName, setEditingName] = useState('');
     // Decks publicados disponíveis no cloud que ainda não possuem cópia local
-    const remoteOnly = cloudDecks.filter(cd => !decks.some(ld => ld.cloudId && ld.cloudId === cd.cloudId));
+  const remoteOnly = cloudDecks.filter(cd => !decks.some(ld => ld.cloudId && ld.cloudId === cd.cloudId));
     return (
       <>
         <header className="stack" style={{ gap: 4 }}>
@@ -587,7 +609,7 @@ export const App: React.FC = () => {
                     onKeyDown={e=> { if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); if(editingName.trim()){ updateDeck(d.id,{ name: editingName.trim() }); setExpanded(null); } } }}
                     autoFocus
                   />
-                ) : (<span>{d.name}</span>)}
+                ) : (<span>{d.name} {d.cloudId && <span className="badge" style={{ background:'#264d7a' }}>Clonado</span>}</span>)}
                 <div className="inline" style={{ gap:6 }}>
                   <label className="inline" style={{ fontSize:12 }}>
                     <input type="checkbox" checked={d.active} onChange={e=> updateDeck(d.id,{ active: e.target.checked })} /> <span className="caption">Ativo</span>
@@ -623,7 +645,7 @@ export const App: React.FC = () => {
                     <div className="card-header" style={{ fontSize:14 }}>Áudio da Aula (MP3)</div>
                     {!d.audio && (
                       <label style={{ fontSize:12, display:'flex', flexDirection:'column', gap:6 }}>
-                        <input type="file" accept="audio/mpeg,audio/mp4,audio/x-m4a,.m4a,audio/*" onChange={async (e)=> {
+                        <input type="file" accept="audio/mpeg,audio/mp4,audio/x-m4a,.m4a,audio/*" aria-label="Selecionar arquivo de áudio do baralho" title="Adicionar áudio ao baralho" onChange={async (e)=> {
                           const file = e.target.files?.[0];
                           if (!file) return;
                           if (file.size > 30 * 1024 * 1024) { alert('Arquivo muito grande (>30MB)'); return; }
@@ -643,7 +665,7 @@ export const App: React.FC = () => {
                   </div>
                   <AddCardForm deckId={d.id} />
                   <div className="actions-row" style={{ marginTop:4, flexWrap:'wrap', gap:8 }}>
-                    <button className="btn" type="button" onClick={()=> { setCurrentDeckId(d.id); setIndice(0); setView('study'); setResultado(null); setRespostaEntrada(''); setOrigemUltimaEntrada(null); }}>Estudar este</button>
+                    <button className="btn" type="button" onClick={()=> { setCurrentDeckId(d.id); setIndice(0); setView('study'); setRespostaEntrada(''); setOrigemUltimaEntrada(null); setMostrarRespostaCorreta(false); setRevelarQtde(0); }}>Estudar este</button>
                     {firebaseEnabled && <button className="btn btn-secondary" type="button" onClick={()=> publishDeckFirebase(d)}>{d.cloudId? 'Atualizar Cloud' : 'Publicar Cloud'}</button>}
                     {d.published && <span className="badge">Publicado</span>}
                   </div>
@@ -690,13 +712,13 @@ export const App: React.FC = () => {
   };
 
   const HomeView = () => {
-  const list = studyDeckSource.map(d=> ({ id:d.id, name:d.name, total:d.cards.length, active:d.active, published: d.published }));
+  const list = studyDeckSource.map(d=> ({ id:d.id, name:d.name, total:d.cards.length, active:d.active, published: d.published, cloudId: (d as any).cloudId }));
     const cardStyle: React.CSSProperties = { display:'flex', flexDirection:'column', gap:6 };
     return (
       <>
         <header className="stack" style={{ gap:4 }}>
-          <h1>{firebaseEnabled ? (cloudDecks.length ? 'Baralhos (Cloud)' : 'Baralhos (Local - aguardando publish)') : 'Seus Baralhos'}</h1>
-          <div className="subtitle">{firebaseEnabled ? (cloudDecks.length ? 'Decks publicados disponíveis online' : 'Nenhum deck cloud ainda. Publique um baralho para aparecer aqui.') : 'Crie ou ative baralhos para estudar'}</div>
+          <h1>Seus Baralhos Locais</h1>
+          <div className="subtitle">Estude apenas cópias locais. Você pode publicar para backup, mas o estudo sempre usa a versão local.</div>
         </header>
         <div className="stack" style={{ gap:16 }}>
           {list.map(d => {
@@ -705,7 +727,7 @@ export const App: React.FC = () => {
             return (
               <div key={d.id} className="card" style={cardStyle}>
                 <div className="card-header inline" style={{ justifyContent:'space-between' }}>
-                  <span>{d.name}</span>
+                  <span>{d.name} {d.cloudId && <span className="badge" style={{ background:'#264d7a' }}>Clonado</span>}</span>
                   <span className="badge">{d.total} cartas</span>
                 </div>
                 <div className="caption">Tentativas: {st.attempts} · Acertos: {st.correct} · Taxa: {rate}% · Sessões: {st.sessions}</div>
@@ -713,7 +735,7 @@ export const App: React.FC = () => {
                 {!d.published && firebaseEnabled && cloudDecks.length===0 && <div className="caption" style={{ color:'#ffa947' }}>Ainda não publicado</div>}
                 {decks.find(x=> x.id===d.id)?.audio && <DeckAudioInline meta={decks.find(x=> x.id===d.id)!.audio!} />}
                 <div className="actions-row" style={{ marginTop:4 }}>
-                  <button className="btn" type="button" onClick={()=> { setCurrentDeckId(d.id); setIndice(0); setView('study'); setRespostaEntrada(''); setOrigemUltimaEntrada(null); setResultado(null); }}>Estudar</button>
+                  <button className="btn" type="button" onClick={()=> { setCurrentDeckId(d.id); setIndice(0); setView('study'); setRespostaEntrada(''); setOrigemUltimaEntrada(null); setMostrarRespostaCorreta(false); setRevelarQtde(0); }}>Estudar</button>
                 </div>
               </div>
             );
@@ -740,7 +762,7 @@ export const App: React.FC = () => {
   {/* Implement queue system */}
       <Nav />
       {view === 'home' && <HomeView />}
-      {view === 'study' && <StudyView />}
+  {view === 'study' && <Suspense fallback={<div style={{padding:20}}>Carregando estudo...</div>}><StudyView /></Suspense>}
       {view === 'settings' && <SettingsView />}
       {view === 'decks' && <DecksView />}
       {firebaseEnabled && firebaseInitDelay && !cloudDbRef.current && (
