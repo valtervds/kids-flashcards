@@ -192,6 +192,21 @@ export const App: React.FC = () => {
   const cloudDbRef = useRef<any>(null);
   const cloudStorageRef = useRef<any>(null);
   const [cloudDecks, setCloudDecks] = useState<Deck[]>([]);
+  // Marca quando recebemos o primeiro snapshot (evita race de estudo antes de carregar)
+  const [cloudDecksLoaded, setCloudDecksLoaded] = useState(false);
+  // Efeito de migração de seleção para id cloud quando disponível
+  useEffect(() => {
+    if (!cloudDecksLoaded) return;
+    if (currentDeckId === 'default') return;
+    const local: any = decks.find(d => d.id === currentDeckId);
+    if (local && local.cloudId) {
+      const remote = cloudDecks.find(cd => cd.id === local.cloudId);
+      if (remote) {
+        setCurrentDeckId(remote.id);
+        console.log('[deck:migrate] migrado para id cloud', remote.id);
+      }
+    }
+  }, [cloudDecksLoaded, decks, cloudDecks, currentDeckId]);
   // Log de publicação por deck (apenas sessão atual)
   const [publishLogs, setPublishLogs] = useState<Record<string,string[]>>({});
   const appendPublishLog = (deckId: string, msg: string) => {
@@ -244,6 +259,7 @@ export const App: React.FC = () => {
         console.log('[firebase:listener] published decks snapshot', list.length);
         const mapped: Deck[] = list.map((d: any) => ({ id: d.id, name: d.name, active: true, createdAt: Date.now(), cards: d.cards || [], published: d.published, cloudId: d.id, audio: d.audioMeta ? { name: d.audioMeta.fileName, size: d.audioMeta.size||0, type: d.audioMeta.contentType||'audio/mpeg', key: d.audioMeta.storagePath } : undefined }));
         setCloudDecks(mapped);
+        setCloudDecksLoaded(true);
       }, (err: any) => {
         console.warn('[firebase:listener] decks error', err?.code || err?.message || err);
         (window as any).__FB_DECKS_ERR = err;
@@ -519,6 +535,15 @@ export const App: React.FC = () => {
   );
 
   const StudyView = () => {
+    // Guard de carregamento: se selecionado um deck cloud mas primeiro snapshot ainda não chegou
+    if (currentDeckId !== 'default' && !getCurrentDeck() && firebaseEnabled && !cloudDecksLoaded) {
+      return (
+        <section className="card" style={{ padding:20 }}>
+          <h2>Carregando baralho…</h2>
+          <div className="caption">Aguardando dados do servidor.</div>
+        </section>
+      );
+    }
     if (!perguntas.length) {
       return (
         <section className="card" style={{ padding:20 }}>
