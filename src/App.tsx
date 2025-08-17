@@ -558,7 +558,8 @@ export const App: React.FC = () => {
   // StudyView agora componente externo (lote 5). Mantemos lógica de voz e formulário aqui e passamos via props customizadas.
   // helpers deckKeyForHistory / obterRespostaCorreta / gerarDicaComputed agora vindos do engine
 
-  const StudyView = () => (
+  // Wrapper renomeado para evitar sombra do componente importado StudyView (causava recursão e travamento)
+  const StudyViewContainer = () => (
   <StudyView
       // checkpoint mount
       {...(process.env.NODE_ENV !== 'production' ? { 'data-checkpoint': 'StudyViewMounted' } : {})}
@@ -927,8 +928,8 @@ export const App: React.FC = () => {
       {view === 'home' && <HomeView />}
   {view === 'study' && (
     (process.env.NODE_ENV === 'test')
-      ? <StudyView />
-      : <Suspense fallback={<div style={{padding:20}}>Carregando estudo...</div>}><StudyView /></Suspense>
+  ? <StudyViewContainer />
+  : <Suspense fallback={<div style={{padding:20}}>Carregando estudo...</div>}><StudyViewContainer /></Suspense>
   )}
       {view === 'settings' && <SettingsView />}
       {view === 'decks' && <DecksView />}
