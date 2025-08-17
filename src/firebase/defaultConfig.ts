@@ -19,5 +19,7 @@ export const resolveFirebaseConfig = () => {
     authDomain: vite.VITE_FB_AUTH_DOMAIN || proc.env?.VITE_FB_AUTH_DOMAIN || DEFAULT_FIREBASE_CONFIG.authDomain,
     projectId: vite.VITE_FB_PROJECT_ID || proc.env?.VITE_FB_PROJECT_ID || DEFAULT_FIREBASE_CONFIG.projectId,
     storageBucket: vite.VITE_FB_STORAGE_BUCKET || proc.env?.VITE_FB_STORAGE_BUCKET || DEFAULT_FIREBASE_CONFIG.storageBucket,
+  appId: vite.VITE_FB_APP_ID || proc.env?.VITE_FB_APP_ID || (DEFAULT_FIREBASE_CONFIG as any).appId,
+  messagingSenderId: vite.VITE_FB_MESSAGING_SENDER_ID || proc.env?.VITE_FB_MESSAGING_SENDER_ID || (DEFAULT_FIREBASE_CONFIG as any).messagingSenderId,
   };
 };

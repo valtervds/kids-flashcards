@@ -3,7 +3,7 @@ import { getFirestore, enableIndexedDbPersistence } from 'firebase/firestore';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getStorage } from 'firebase/storage';
 
-export interface FirebaseEnvConfig { apiKey:string; authDomain:string; projectId:string; storageBucket?: string; appId?:string; }
+export interface FirebaseEnvConfig { apiKey:string; authDomain:string; projectId:string; storageBucket?: string; appId?:string; messagingSenderId?: string; }
 
 let inited = false;
 let firestoreInstance: ReturnType<typeof getFirestore> | null = null;
@@ -12,7 +12,7 @@ let storageInstance: ReturnType<typeof getStorage> | null = null;
 
 export const initFirebaseApp = async (cfg: FirebaseEnvConfig) => {
   if (inited) return { db: firestoreInstance!, auth: authInstance!, storage: storageInstance! };
-  const app = initializeApp(cfg);
+  const app = initializeApp(cfg as any);
   const db = getFirestore(app);
   try { await enableIndexedDbPersistence(db); } catch {/* ignore offline if unsupported */}
   const auth = getAuth(app);

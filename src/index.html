@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Kids Flashcards</title>
-    <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="manifest" href="manifest.webmanifest" />
     <meta name="theme-color" content="#4f46e5" />
   </head>
   <body>
@@ -13,7 +13,8 @@
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js').then(r => console.log('[SW] registrado', r.scope)).catch(e => console.warn('[SW] erro', e));
+  // usar caminho relativo para funcionar em GitHub Pages subpath
+  navigator.serviceWorker.register('./sw.js').then(r => console.log('[SW] registrado', r.scope)).catch(e => console.warn('[SW] erro', e));
       });
     }
   </script>
