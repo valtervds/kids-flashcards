@@ -243,7 +243,8 @@ export const App: React.FC = () => {
   };
   const firebaseEnv = resolveFirebaseConfig();
   const firebaseAvailable = !!firebaseEnv.apiKey && process.env.NODE_ENV !== 'test';
-  const [firebaseEnabled, setFirebaseEnabled] = useState<boolean>(() => { try { return localStorage.getItem('fb.enabled') === '1'; } catch { return false; } });
+  // Firebase sempre habilitado (remoção do toggle de ativação)
+  const firebaseEnabled = true;
   const [firebaseStatus, setFirebaseStatus] = useState('');
   const [firebaseUid, setFirebaseUid] = useState<string | null>(null);
   const cloudDbRef = useRef<any>(null);
@@ -267,8 +268,7 @@ export const App: React.FC = () => {
       setFirebaseStatus('Online');
     } catch (e) { console.warn(e); setFirebaseStatus('Erro init'); }
   };
-  useEffect(()=> { if (firebaseEnabled) initFirebaseFull(); }, [firebaseEnabled]);
-  useEffect(()=> { try { localStorage.setItem('fb.enabled', firebaseEnabled? '1':'0'); } catch {/* ignore */} }, [firebaseEnabled]);
+  useEffect(()=> { initFirebaseFull(); }, []);
   // Flush pendente ao fechar/ocultar
   useEffect(() => {
     const handler = () => { if (firebaseEnabled && firebaseUid && cloudDbRef.current) { flushRemote(cloudDbRef.current, firebaseUid); } };
@@ -613,19 +613,13 @@ export const App: React.FC = () => {
           </div>
         )}
       </section>
-      <section className="card stack" style={{ gap:14 }}>
-        <div className="card-header">Firebase Decks (Fase 1)</div>
-        {!firebaseAvailable && <div className="caption">Variáveis VITE_FB_* ausentes (modo cloud desativado).</div>}
-        {firebaseAvailable && (
-          <>
-            <label className="inline" style={{ fontSize:14 }}>
-              <input type="checkbox" checked={firebaseEnabled} onChange={e=> setFirebaseEnabled(e.target.checked)} /> Habilitar decks cloud
-            </label>
-            <div className="caption">Status: {firebaseStatus || '—'} {firebaseUid && `· UID ${firebaseUid.slice(0,6)}`}</div>
-            <div className="caption">Ao habilitar você pode publicar baralhos em "Baralhos".</div>
-          </>
-        )}
-      </section>
+      {firebaseAvailable && (
+        <section className="card stack" style={{ gap:14 }}>
+          <div className="card-header">Firebase Cloud</div>
+          <div className="caption">Sincronização cloud ativa por padrão.</div>
+          <div className="caption">Status: {firebaseStatus || '…'} {firebaseUid && `· UID ${firebaseUid.slice(0,6)}`}</div>
+        </section>
+      )}
     </>
   );
 
