@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useRef, lazy, Suspense, useCallback } from 'react';
 // Removido: legado cloudSync substituído por fluxo Firebase moderno
 import { resolveFirebaseConfig } from './firebase/defaultConfig';
 // Fase 1 Firebase infra (usado progressivamente). Variáveis esperadas via Vite env:
@@ -152,8 +152,25 @@ export const App: React.FC = () => {
 
   const DeckAudioInline: React.FC<{ meta: DeckAudioMeta }> = ({ meta }) => {
     const [url, setUrl] = useState<string | undefined>(undefined);
-    useEffect(()=> { let alive=true; getAudioObjectUrl(meta).then(u=> { if(alive) setUrl(u); }); return ()=> { alive=false; }; }, [meta.key]);
-    if (!url) return <div className="caption">Áudio…</div>;
+    const [erro, setErro] = useState<string | null>(null);
+    const [tentando, setTentando] = useState(false);
+    const carregar = useCallback(async () => {
+      setTentando(true); setErro(null);
+      try {
+        const u = await getAudioObjectUrl(meta);
+        if (!u) setErro('Não foi possível carregar o áudio');
+        setUrl(u);
+      } catch (e:any) {
+        console.warn('[DeckAudioInline] falha', e);
+        setErro(e?.message || 'Falha ao carregar áudio');
+      } finally { setTentando(false); }
+    }, [meta.key]);
+    useEffect(()=> { let alive=true; carregar(); return ()=> { alive=false; }; }, [carregar]);
+    if (erro) return <div className="caption" style={{ display:'flex', flexDirection:'column', gap:4 }}>
+      <span>Áudio: {erro}</span>
+      <button className="btn btn-ghost" type="button" disabled={tentando} onClick={carregar}>{tentando? 'Tentando...' : 'Tentar novamente'}</button>
+    </div>;
+    if (!url) return <div className="caption">Carregando áudio...</div>;
     return <audio controls preload="metadata" src={url} style={{ width:'100%' }} />;
   };
   // DeckStats movido para domain/models
