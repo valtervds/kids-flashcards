@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { MascoteTTS } from './components/MascoteTTS';
 import { Stars } from './components/Stars';
-import { avaliar } from './evaluation';
+import { avaliar, respostasCorretas } from './evaluation';
 
 // Tipo de janela para TS (extensões Web Speech API)
 declare global {
@@ -35,18 +35,24 @@ const ReconhecimentoVoz: React.FC<ReconhecimentoProps> = ({ onResultado }) => {
     instancia.maxAlternatives = 1;
     instancia.onstart = () => { setGravando(true); setTranscricao(''); };
     instancia.onerror = (e: any) => { console.warn('[ASR] erro', e.error); setErro(e.error); setGravando(false); };
+    let acumuladoFinal = '';
     instancia.onresult = (e: any) => {
-      let finalTexto = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const res = e.results[i];
-        if (res.isFinal) finalTexto += res[0].transcript;
-        else finalTexto += res[0].transcript; // interim
+        if (res.isFinal) {
+          acumuladoFinal += res[0].transcript;
+        } else {
+          // mostra parcial juntando acumulado + atual
+          setTranscricao((acumuladoFinal + res[0].transcript).trim());
+        }
       }
-      setTranscricao(finalTexto);
+      // se recebeu final em algum ponto atualiza transcrição completa
+      if (acumuladoFinal) setTranscricao(acumuladoFinal.trim());
     };
     instancia.onend = () => {
       setGravando(false);
-      if (transcricao.trim()) onResultado(transcricao.trim());
+      const finalStr = (acumuladoFinal || transcricao).trim();
+      if (finalStr) onResultado(finalStr);
     };
     try {
       instancia.start();
@@ -84,6 +90,23 @@ const perguntas = [
   'O que é um flashcard?'
 ];
 
+// Funções de apoio para dicas / resposta correta
+function obterRespostaCorretaPreferida(idx: number): string {
+  const lista = respostasCorretas[idx];
+  if (!lista || !lista.length) return '';
+  // Escolhe a primeira como canônica
+  return lista[0];
+}
+
+function gerarDica(idx: number, revelarQtde: number): string {
+  const resp = obterRespostaCorretaPreferida(idx);
+  if (!resp) return '';
+  const limite = Math.min(revelarQtde, resp.length);
+  const revelada = resp.slice(0, limite);
+  const restante = resp.slice(limite).replace(/./g, '•');
+  return revelada + restante;
+}
+
 // (agora respostasCorretas/normalização centralizadas em evaluation.ts)
 
 export const App: React.FC = () => {
@@ -96,20 +119,61 @@ export const App: React.FC = () => {
   const audioErroRef = useRef<HTMLAudioElement | null>(null);
   const [inicioPerguntaTs, setInicioPerguntaTs] = useState<number>(() => Date.now());
   const [ultimoTempoRespostaMs, setUltimoTempoRespostaMs] = useState<number | null>(null);
+  const [mostrarRespostaCorreta, setMostrarRespostaCorreta] = useState(false);
+  const [revelarQtde, setRevelarQtde] = useState(0); // letras reveladas na dica
 
   useEffect(() => {
-    // Tenta carregar arquivos reais; fallback para beeps embutidos
-    const ok = new Audio('/sounds/success.mp3');
-    const err = new Audio('/sounds/error.mp3');
-    ok.onerror = () => {
-      ok.src = 'data:audio/wav;base64,UklGRuwAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YbAAAACAgICAgP8AAP//AAAA';
-    };
-    err.onerror = () => {
-      err.src = 'data:audio/wav;base64,UklGRuwAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YaAAAAD///8AAAD/AAD//wAA';
-    };
-    audioOkRef.current = ok;
-    audioErroRef.current = err;
+    // Sons embutidos base64 (dois beeps curtos diferentes)
+    const SUCCESS_BEEP = 'data:audio/wav;base64,UklGRqgAAABXQVZFZm10IBAAAAABAAEAIlYAACJWAAABAAgAZGF0YYAAAAAAAP8A/wD///8A/wD/AP8A//8A////AP8A/wD///8AAAAA';
+    const ERROR_BEEP = 'data:audio/wav;base64,UklGRqgAAABXQVZFZm10IBAAAAABAAEAIlYAACJWAAABAAgAZGF0YQAAAAAA////AP//AP8A//8A////AP8A//8A////AP8A//8A';
+    audioOkRef.current = new Audio(SUCCESS_BEEP);
+    audioErroRef.current = new Audio(ERROR_BEEP);
+    audioOkRef.current.preload = 'auto';
+    audioErroRef.current.preload = 'auto';
   }, []);
+
+  // Controle de primeira interação para evitar bloqueio de autoplay em mobile
+  const interagiuRef = useRef(false);
+  useEffect(() => {
+    const marcar = () => { interagiuRef.current = true; };
+    window.addEventListener('pointerdown', marcar, { once: true });
+    window.addEventListener('keydown', marcar, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', marcar);
+      window.removeEventListener('keydown', marcar);
+    };
+  }, []);
+
+  // Fallback via Web Audio API caso play() rejeite (ex: bloqueio de autoplay)
+  const safePlay = (audio: HTMLAudioElement | null, fallbackFreq: number) => {
+    if (!audio) return;
+    try {
+      const p = audio.play();
+      if (p && typeof p.then === 'function') {
+        p.catch(() => {
+          if (!interagiuRef.current) return; // aguarda interação do usuário
+          try {
+            const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.frequency.value = fallbackFreq;
+            osc.type = 'sine';
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            gain.gain.setValueAtTime(0.001, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + 0.01);
+            gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.25);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.26);
+          } catch (e) {
+            // silencia
+          }
+        });
+      }
+    } catch {
+      // ignorar
+    }
+  };
 
   const submeter = (origem: 'voz' | 'manual') => {
     const valor = origem === 'voz' ? respostaVoz : respostaManual;
@@ -117,7 +181,7 @@ export const App: React.FC = () => {
     const res = avaliar(indice, valor);
     setResultado(res);
   setUltimoTempoRespostaMs(Date.now() - inicioPerguntaTs);
-    if (res.correto) audioOkRef.current?.play(); else audioErroRef.current?.play();
+  if (res.correto) safePlay(audioOkRef.current, 880); else safePlay(audioErroRef.current, 220);
   };
 
   const proximaPergunta = () => {
@@ -127,6 +191,9 @@ export const App: React.FC = () => {
     setRespostaManual('');
     setResultado(null);
   setInicioPerguntaTs(Date.now());
+  setMostrarRespostaCorreta(false);
+  setRevelarQtde(0);
+  setUltimoTempoRespostaMs(null);
   };
 
   // Auto-avaliar quando voz chega se toggle ligado
@@ -175,6 +242,24 @@ export const App: React.FC = () => {
           />
           <button type="submit">Enviar</button>
         </form>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+          <button type="button" onClick={() => setRevelarQtde(r => r + 1)} disabled={mostrarRespostaCorreta}>
+            Dica
+          </button>
+          <button type="button" onClick={() => setMostrarRespostaCorreta(true)} disabled={mostrarRespostaCorreta}>
+            Mostrar resposta correta
+          </button>
+        </div>
+        {revelarQtde > 0 && !mostrarRespostaCorreta && (
+          <div style={{ marginTop: 8, fontSize: 14, background: '#f7f7f7', padding: 6, borderRadius: 4 }}>
+            Dica: {gerarDica(indice, revelarQtde)}
+          </div>
+        )}
+        {mostrarRespostaCorreta && (
+          <div style={{ marginTop: 8, fontSize: 14, background: '#eef9f1', padding: 6, borderRadius: 4 }}>
+            Resposta correta: <strong>{obterRespostaCorretaPreferida(indice)}</strong>
+          </div>
+        )}
       </div>
       {resultado && (
         <div style={{ marginTop: 16 }}>
@@ -185,6 +270,11 @@ export const App: React.FC = () => {
           {ultimoTempoRespostaMs != null && (
             <div style={{ marginTop: 4, fontSize: 12, color: '#555' }}>
               Tempo de resposta: {ultimoTempoRespostaMs} ms
+            </div>
+          )}
+          {!resultado.correto && !mostrarRespostaCorreta && (
+            <div style={{ marginTop: 4, fontSize: 12, color: '#666' }}>
+              Dica: use o botão "Dica" ou revele a resposta correta para aprender.
             </div>
           )}
         </div>
