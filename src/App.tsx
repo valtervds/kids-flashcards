@@ -329,6 +329,20 @@ export const App: React.FC = () => {
     }
   };
   useEffect(()=> { initFirebaseFull(); }, []);
+  // Aviso se demorar para inicializar
+  const [firebaseInitDelay, setFirebaseInitDelay] = useState(false);
+  useEffect(()=> {
+    const t = setTimeout(()=> {
+      if (firebaseEnabled && !cloudDbRef.current) setFirebaseInitDelay(true);
+    }, 5000);
+    return ()=> clearTimeout(t);
+  }, [firebaseEnabled]);
+  const forceFirebaseInit = () => {
+    if (!cloudDbRef.current) {
+      appendPublishLog && appendPublishLog('global','Forçando init Firebase...');
+      initFirebaseFull();
+    }
+  };
   // Flush pendente ao fechar/ocultar
   useEffect(() => {
     const handler = () => { if (firebaseEnabled && firebaseUid && cloudDbRef.current) { flushRemote(cloudDbRef.current, firebaseUid); } };
@@ -924,6 +938,12 @@ export const App: React.FC = () => {
       {view === 'study' && <StudyView />}
       {view === 'settings' && <SettingsView />}
       {view === 'decks' && <DecksView />}
+      {firebaseEnabled && firebaseInitDelay && !cloudDbRef.current && (
+        <div style={{position:'fixed',bottom:30,left:10,right:10,background:'#2d3f53',padding:'10px 12px',border:'1px solid #44617f',borderRadius:6,fontSize:12,display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
+          <span>Firebase ainda não inicializado (possível atraso de rede). Tente novamente.</span>
+          <button className="btn btn-secondary" type="button" onClick={forceFirebaseInit}>Reinicializar</button>
+        </div>
+      )}
       <footer>Kids Flashcards · Interface melhorada · v1</footer>
   {firebaseEnabled && <div style={{position:'fixed',bottom:4,right:8,fontSize:12,opacity:0.8}}>Cloud {remoteQueue.length||remoteSessionIncrement.length? '⏳':'✔'}</div>}
       <audio ref={audioOkRef} style={{ display: 'none' }} aria-hidden="true" />
