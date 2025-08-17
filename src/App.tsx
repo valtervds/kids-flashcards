@@ -10,6 +10,8 @@ import { avaliar, respostasCorretas, normalizar } from './evaluation';
 import { Deck, DeckAudioMeta, Flashcard, DeckStats, ProgressMap } from './domain/models';
 import { gerarDica, obterRespostaCorretaPreferida } from './utils/scoring';
 import { useLocalDecks } from './features/decks/useLocalDecks';
+import { useProgress } from './features/study/hooks/useProgress';
+import { useStudySession } from './features/study/hooks/useStudySession';
 import { DeckImport } from './components/DeckImport';
 // Imports estáticos para evitar falhas de carregamento dinâmico em GitHub Pages (chunks 404)
 import { createDeck, updateDeckDoc, listenPublishedDecks, deleteDeckDoc } from './firebase/decksRepo';
@@ -147,7 +149,7 @@ export const App: React.FC = () => {
 
   // Estados principais
   const [view, setView] = useState<'home' | 'study' | 'settings' | 'decks'>(() => process.env.NODE_ENV === 'test' ? 'study' : 'home');
-  const [indice, setIndice] = useState(0);
+  const { indice, setIndice, proxima: proximaPerguntaBase } = useStudySession(perguntas);
   const [respostaEntrada, setRespostaEntrada] = useState('');
   const [origemUltimaEntrada, setOrigemUltimaEntrada] = useState<'voz' | 'manual' | null>(null);
   const [resultado, setResultado] = useState<ReturnType<typeof avaliar> | null>(null);
@@ -158,10 +160,8 @@ export const App: React.FC = () => {
   const [audioPronto, setAudioPronto] = useState(false);
   const [inicioPerguntaTs, setInicioPerguntaTs] = useState(Date.now());
   const [ultimoTempoRespostaMs, setUltimoTempoRespostaMs] = useState<number | null>(null);
-  // Histórico de pontuações por deck/cartão
-  const loadProgress = (): ProgressMap => { try { const raw = localStorage.getItem('deck.progress'); if (raw) return JSON.parse(raw); } catch { /* ignore */ } return {}; };
-  const [progress, setProgress] = useState<ProgressMap>(loadProgress);
-  useEffect(() => { try { localStorage.setItem('deck.progress', JSON.stringify(progress)); } catch { /* ignore */ } }, [progress]);
+  // Histórico de pontuações por deck/cartão via hook dedicado
+  const { progress, setProgress } = useProgress();
   const [mostrarHistorico, setMostrarHistorico] = useState(false);
   // --------- Cloud Sync State ---------
   // Cloud sync legado removido
@@ -475,19 +475,19 @@ export const App: React.FC = () => {
   };
 
   const proximaPergunta = () => {
-    setIndice(p => (p + 1) % perguntas.length);
-  setRespostaEntrada(''); setResultado(null); setMostrarRespostaCorreta(false); setOrigemUltimaEntrada(null);
+    proximaPerguntaBase();
+    setRespostaEntrada(''); setResultado(null); setMostrarRespostaCorreta(false); setOrigemUltimaEntrada(null);
     setRevelarQtde(0); setUltimoTempoRespostaMs(null); setInicioPerguntaTs(Date.now());
-    // sessão concluída quando volta ao índice 0
-    setStats(prev => {
-      if ((indice + 1) % perguntas.length !== 0) return prev;
-      const id = usandoDeckImportado ? currentDeckId : 'default';
-      const cur = prev[id] || { attempts: 0, correct: 0, sessions: 0 };
-      return { ...prev, [id]: { ...cur, sessions: cur.sessions + 1 } };
-    });
-    if (firebaseEnabled && getCurrentDeck()?.cloudId && firebaseUid && cloudDbRef.current && (indice + 1) % perguntas.length === 0) {
-      queueSessionIncrement(getCurrentDeck()!.cloudId!);
-  scheduleFlush(cloudDbRef.current, firebaseUid);
+    if (perguntas.length && (indice + 1) % perguntas.length === 0) {
+      setStats(prev => {
+        const id = usandoDeckImportado ? currentDeckId : 'default';
+        const cur = prev[id] || { attempts: 0, correct: 0, sessions: 0 };
+        return { ...prev, [id]: { ...cur, sessions: cur.sessions + 1 } };
+      });
+      if (firebaseEnabled && getCurrentDeck()?.cloudId && firebaseUid && cloudDbRef.current) {
+        queueSessionIncrement(getCurrentDeck()!.cloudId!);
+        scheduleFlush(cloudDbRef.current, firebaseUid);
+      }
     }
   };
 
