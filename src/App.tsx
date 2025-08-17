@@ -243,8 +243,8 @@ export const App: React.FC = () => {
   };
   const firebaseEnv = resolveFirebaseConfig();
   const firebaseAvailable = !!firebaseEnv.apiKey && process.env.NODE_ENV !== 'test';
-  // Firebase sempre habilitado (remoção do toggle de ativação)
-  const firebaseEnabled = true;
+  // Firebase habilitado internamente; se falhar configuração de Auth desabilitamos em runtime
+  const [firebaseEnabled, setFirebaseEnabled] = useState(true);
   // Expor config para debug (somente leitura)
   if (typeof window !== 'undefined') {
     (window as any).__FB_CFG = firebaseEnv;
@@ -273,7 +273,17 @@ export const App: React.FC = () => {
         setCloudDecks(mapped);
       });
       setFirebaseStatus('Online');
-    } catch (e) { console.warn(e); setFirebaseStatus('Erro init'); }
+    } catch (e:any) {
+      console.warn(e);
+      const msg = String(e?.code || e?.message || e);
+      if (msg.includes('auth/configuration-not-found') || msg.includes('auth/operation-not-allowed')) {
+        setFirebaseStatus('Config inválida');
+        setFirebaseEnabled(false);
+        if (typeof window !== 'undefined') (window as any).__FB_AUTH_ERR = msg;
+      } else {
+        setFirebaseStatus('Erro init');
+      }
+    }
   };
   useEffect(()=> { initFirebaseFull(); }, []);
   // Flush pendente ao fechar/ocultar
@@ -768,6 +778,11 @@ export const App: React.FC = () => {
 
   return (
     <div className="app-container">
+      {!firebaseEnabled && firebaseStatus==='Config inválida' && (
+        <div style={{position:'fixed',top:0,left:0,right:0,background:'#b30000',color:'#fff',padding:'6px 10px',fontSize:12,zIndex:1000}}>
+          Cloud desativado: configuração Firebase inválida (anon auth não habilitado ou domínio não autorizado). App segue offline.
+        </div>
+      )}
   {/* Remote progress helpers */}
   {/* Implement queue system */}
       <Nav />
