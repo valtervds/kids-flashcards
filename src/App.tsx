@@ -245,6 +245,10 @@ export const App: React.FC = () => {
   const firebaseAvailable = !!firebaseEnv.apiKey && process.env.NODE_ENV !== 'test';
   // Firebase sempre habilitado (remoção do toggle de ativação)
   const firebaseEnabled = true;
+  // Expor config para debug (somente leitura)
+  if (typeof window !== 'undefined') {
+    (window as any).__FB_CFG = firebaseEnv;
+  }
   const [firebaseStatus, setFirebaseStatus] = useState('');
   const [firebaseUid, setFirebaseUid] = useState<string | null>(null);
   const cloudDbRef = useRef<any>(null);
@@ -314,14 +318,17 @@ export const App: React.FC = () => {
     if (!firebaseEnabled) return alert('Firebase não habilitado');
     if (!cloudDbRef.current) return alert('Firebase não pronto');
     try {
+  console.log('[publishDeckFirebase] iniciando', { deckId: deck.id, cloudId: deck.cloudId, name: deck.name });
       setFirebaseStatus('Publicando...');
       const { createDeck, updateDeckDoc } = await import('./firebase/decksRepo');
       let cloudId = deck.cloudId;
       if (!cloudId) {
         cloudId = await createDeck(cloudDbRef.current, { ownerId: firebaseUid || 'anon', name: deck.name, active: deck.active, published: true, cards: deck.cards });
         updateDeck(deck.id, { cloudId, published: true });
+    console.log('[publishDeckFirebase] deck criado', { cloudId });
       } else {
         await updateDeckDoc(cloudDbRef.current, cloudId, { name: deck.name, active: deck.active, published: true, cards: deck.cards });
+    console.log('[publishDeckFirebase] deck atualizado', { cloudId });
       }
       if (deck.audio && cloudStorageRef.current) {
         const blob = await loadAudioBlob(deck.audio.key);
@@ -329,9 +336,11 @@ export const App: React.FC = () => {
           const { uploadDeckAudio } = await import('./firebase/storage');
             const up = await uploadDeckAudio(cloudStorageRef.current, cloudId!, blob, deck.audio.name);
             await updateDeckDoc(cloudDbRef.current, cloudId!, { audioMeta: { fileName: deck.audio.name, storagePath: up.storagePath, contentType: deck.audio.type, size: deck.audio.size }, published: true });
+    console.log('[publishDeckFirebase] audio enviado', { cloudId, storagePath: up.storagePath });
         }
       }
       setFirebaseStatus('Publicado');
+  console.log('[publishDeckFirebase] finalizado com sucesso');
       alert('Deck publicado na nuvem.');
     } catch (e) { console.error(e); setFirebaseStatus('Erro publicar'); alert('Falha ao publicar deck'); }
   };
