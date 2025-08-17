@@ -16,8 +16,14 @@ import { useStats } from './features/study/hooks/useStats';
 import { useAudioFeedback } from './features/study/hooks/useAudioFeedback';
 import { useAnswerEvaluation } from './features/study/hooks/useAnswerEvaluation'; // still used inside engine
 import { useStudyEngine } from './features/study/hooks/useStudyEngine';
-// Code-splitting StudyView
-const StudyViewExternal = lazy(() => import('./features/study/StudyView').then(m => ({ default: m.StudyView })));
+// Code-splitting StudyView (carrega imediatamente em ambiente de teste para simplificar testes)
+let StudyView: React.ComponentType<any>;
+if (process.env.NODE_ENV === 'test') {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  StudyView = require('./features/study/StudyView').StudyView;
+} else {
+  StudyView = lazy(() => import('./features/study/StudyView').then(m => ({ default: m.StudyView })));
+}
 import { useRemoteProgressQueue } from './features/study/hooks/useRemoteProgressQueue';
 import { DeckImport } from './components/DeckImport';
 // Imports estáticos para evitar falhas de carregamento dinâmico em GitHub Pages (chunks 404)
@@ -251,7 +257,7 @@ export const App: React.FC = () => {
   const firebaseEnv = resolveFirebaseConfig();
   const firebaseAvailable = !!firebaseEnv.apiKey && process.env.NODE_ENV !== 'test';
   // Firebase habilitado internamente; se falhar configuração de Auth desabilitamos em runtime
-  const [firebaseEnabled, setFirebaseEnabled] = useState(true);
+  const [firebaseEnabled, setFirebaseEnabled] = useState(process.env.NODE_ENV !== 'test');
   // Expor config para debug (somente leitura)
   if (typeof window !== 'undefined') {
     (window as any).__FB_CFG = firebaseEnv;
@@ -411,9 +417,27 @@ export const App: React.FC = () => {
       console.log('[publishDeckFirebase] iniciando', { deckId: deck.id, cloudId: deck.cloudId, name: deck.name });
       appendPublishLog(deck.id, 'Iniciando publicação...');
       setFirebaseStatus('Publicando...');
+      // Garante que temos UID válido (anonymous auth) antes de escrever
+      if (!firebaseUid) {
+        appendPublishLog(deck.id, 'Obtendo autenticação anônima...');
+        try {
+          const { ensureAnonymousAuth } = await import('./firebase/app');
+          const uid = await ensureAnonymousAuth();
+          setFirebaseUid(uid);
+          appendPublishLog(deck.id, 'Auth OK (uid=' + uid + ').');
+        } catch (e:any) {
+          appendPublishLog(deck.id, 'Falha auth: ' + (e?.code || e?.message || String(e)));
+          alert('Não foi possível autenticar (anônimo).');
+          return;
+        }
+      }
+      if (!firebaseUid) {
+        appendPublishLog(deck.id, 'UID ausente após tentativa de auth. Abortando.');
+        return alert('UID não disponível para publicar.');
+      }
       let cloudId = deck.cloudId;
       if (!cloudId) {
-        cloudId = await createDeck(cloudDbRef.current, { ownerId: firebaseUid || 'anon', name: deck.name, active: deck.active, published: true, cards: deck.cards });
+        cloudId = await createDeck(cloudDbRef.current, { ownerId: firebaseUid, name: deck.name, active: deck.active, published: true, cards: deck.cards });
         updateDeck(deck.id, { cloudId, published: true });
         console.log('[publishDeckFirebase] deck criado', { cloudId });
         appendPublishLog(deck.id, `Deck criado na nuvem (id=${cloudId}).`);
@@ -456,10 +480,11 @@ export const App: React.FC = () => {
       const code = e?.code || e?.message || String(e);
       setFirebaseStatus('Erro publicar');
       appendPublishLog(deck.id, 'Erro: ' + code);
-      if (String(code).includes('permission-denied')) {
-        appendPublishLog(deck.id, 'Verifique regras Firestore: leitura pública de published==true e ownerId corresponde ao usuário.');
+      if (String(code).includes('permission-denied') || String(code).includes('Missing or insufficient permissions')) {
+        appendPublishLog(deck.id, 'Permission denied: confirme que ownerId == request.auth.uid e regras permitem create/update.');
+        appendPublishLog(deck.id, 'Debug: uid atual=' + firebaseUid + ' cloudId=' + (deck.cloudId||'-'));
       }
-      alert('Falha ao publicar deck (ver console). Código: ' + code);
+      alert('Falha ao publicar deck. Código: ' + code);
     }
   };
   // Fallback: enquanto nenhum deck cloud carregado ainda, continua mostrando decks locais ativos
@@ -534,7 +559,7 @@ export const App: React.FC = () => {
   // helpers deckKeyForHistory / obterRespostaCorreta / gerarDicaComputed agora vindos do engine
 
   const StudyView = () => (
-    <StudyViewExternal
+  <StudyView
       // checkpoint mount
       {...(process.env.NODE_ENV !== 'production' ? { 'data-checkpoint': 'StudyViewMounted' } : {})}
       perguntas={perguntas}
