@@ -111,6 +111,27 @@ export const App: React.FC = () => {
     if (audioUrlCache.current[meta.key]) return audioUrlCache.current[meta.key];
     // tenta IndexedDB
     let blob = await loadAudioBlob(meta.key);
+    // Caso usuário tenha configurado manualmente uma URL direta (downloadUrl ou key http)
+    if (!blob && (meta.downloadUrl || meta.key.startsWith('http'))) {
+      const direct = meta.downloadUrl || meta.key;
+      // Podemos simplesmente retornar a URL remota (sem offline). Para offline poderíamos baixar e cachear.
+      try {
+        const resp = await fetch(direct, { method: 'GET' });
+        if (resp.ok && resp.headers.get('content-type')?.startsWith('audio')) {
+          const fetched = await resp.blob();
+          // Salva offline usando key = meta.key (para não conflitar com storage path)
+          await saveAudioBlob(meta.key, fetched);
+          blob = fetched; // cria object URL abaixo
+        } else {
+          // Se não conseguimos baixar (CORS ou 403), ainda assim usar o link direto sem caching
+          audioUrlCache.current[meta.key] = direct;
+          return direct;
+        }
+      } catch {
+        audioUrlCache.current[meta.key] = direct;
+        return direct;
+      }
+    }
     // Se não existir local e parece ser caminho remoto, tenta Firebase Storage
     if (!blob && firebaseEnabled && cloudStorageRef.current && (meta.remotePath || meta.key.startsWith('deck-audio/'))) {
       const remotePath = meta.remotePath || meta.key;
@@ -750,18 +771,21 @@ export const App: React.FC = () => {
                   <div className="stack" style={{ gap:6 }}>
                     <div className="card-header" style={{ fontSize:14 }}>Áudio da Aula (MP3)</div>
                     {!d.audio && (
-                      <label style={{ fontSize:12, display:'flex', flexDirection:'column', gap:6 }}>
-                        <input type="file" accept="audio/mpeg,audio/mp4,audio/x-m4a,.m4a,audio/*" aria-label="Selecionar arquivo de áudio do baralho" title="Adicionar áudio ao baralho" onChange={async (e)=> {
-                          const file = e.target.files?.[0];
-                          if (!file) return;
-                          if (file.size > 30 * 1024 * 1024) { alert('Arquivo muito grande (>30MB)'); return; }
-                          const key = d.id + ':' + Date.now();
-                          const ok = await saveAudioBlob(key, file);
-                          if (!ok) { alert('Falha ao salvar áudio (IndexedDB).'); return; }
-                          updateDeck(d.id,{ audio: { name: file.name, size: file.size, type: file.type || 'audio/mpeg', key } });
-                        }} />
-                        <span className="caption">Selecione um áudio (MP3/M4A até 30MB). Salvo localmente.</span>
-                      </label>
+                      <div className="stack" style={{ gap:8 }}>
+                        <label style={{ fontSize:12, display:'flex', flexDirection:'column', gap:6 }}>
+                          <input type="file" accept="audio/mpeg,audio/mp4,audio/x-m4a,.m4a,audio/*" aria-label="Selecionar arquivo de áudio do baralho" title="Adicionar áudio ao baralho" onChange={async (e)=> {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            if (file.size > 30 * 1024 * 1024) { alert('Arquivo muito grande (>30MB)'); return; }
+                            const key = d.id + ':' + Date.now();
+                            const ok = await saveAudioBlob(key, file);
+                            if (!ok) { alert('Falha ao salvar áudio (IndexedDB).'); return; }
+                            updateDeck(d.id,{ audio: { name: file.name, size: file.size, type: file.type || 'audio/mpeg', key } });
+                          }} />
+                          <span className="caption">Selecione um áudio (MP3/M4A até 30MB). Salvo localmente.</span>
+                        </label>
+                        <ManualRemoteAudioInput deck={d} onSet={(meta)=> updateDeck(d.id,{ audio: meta })} />
+                      </div>
                     )}
                     {d.audio && (
                       <div className="stack" style={{ gap:6 }}>
@@ -881,6 +905,40 @@ export const App: React.FC = () => {
   {firebaseEnabled && <div style={{position:'fixed',bottom:4,right:8,fontSize:12,opacity:0.8}}>Cloud {remoteQueueApi.hasPending()? '⏳':'✔'}</div>}
       <audio ref={audioOkRef} style={{ display: 'none' }} aria-hidden="true" />
       <audio ref={audioErroRef} style={{ display: 'none' }} aria-hidden="true" />
+    </div>
+  );
+};
+
+// Entrada manual de URL remota (Firebase Storage ou outro CDN) sem upload automático
+const ManualRemoteAudioInput: React.FC<{ deck: Deck; onSet: (meta: DeckAudioMeta) => void }> = ({ deck, onSet }) => {
+  const [url, setUrl] = useState('');
+  const [processing, setProcessing] = useState(false);
+  const apply = async () => {
+    if (!url.trim()) return;
+    setProcessing(true);
+    let clean = url.trim();
+    // Aceita link compartilhável do Firebase (token=) ou gs:// ou https://firebasestorage.googleapis.com/.../o/...
+    // Para simplicidade se começar com gs:// rejeitamos (não diretamente acessível via audio tag)
+    if (clean.startsWith('gs://')) {
+      alert('Use o link público (https) obtido pelo botão "Obter URL de download" no Firebase Storage.');
+      setProcessing(false); return;
+    }
+    // Gera meta mínima
+    const nameGuess = clean.split('?')[0].split('/').pop() || 'audio.mp3';
+    // Tenta HEAD para obter content-type/size (não essencial)
+    let size = 0; let type = 'audio/mpeg';
+    try { const head = await fetch(clean, { method:'HEAD' }); if (head.ok) { size = Number(head.headers.get('content-length')||0); const ct = head.headers.get('content-type'); if (ct) type = ct; } } catch { /* ignore */ }
+    onSet({ name: nameGuess, size, type, key: clean, remotePath: undefined, downloadUrl: clean });
+    setProcessing(false); setUrl('');
+  };
+  return (
+    <div className="stack" style={{ gap:4 }}>
+      <input placeholder="Ou cole URL pública do áudio" value={url} onChange={e=> setUrl(e.target.value)} onKeyDown={e=> { if(e.key==='Enter'){ e.preventDefault(); apply(); } }} />
+      <div className="inline" style={{ gap:6 }}>
+        <button className="btn btn-secondary" type="button" disabled={!url.trim()||processing} onClick={apply}>Usar URL</button>
+        {processing && <span className="caption">Validando...</span>}
+      </div>
+      <span className="caption" style={{ opacity:0.7 }}>Cole a URL de download do Firebase Storage (começa com https) ou outro host público. Será referenciada diretamente.</span>
     </div>
   );
 };
