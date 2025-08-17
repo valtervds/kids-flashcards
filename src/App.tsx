@@ -401,7 +401,7 @@ export const App: React.FC = () => {
         console.log('[publishDeckFirebase] deck atualizado', { cloudId });
         appendPublishLog(deck.id, `Deck atualizado (id=${cloudId}).`);
       }
-      if (deck.audio && cloudStorageRef.current) {
+  if (deck.audio && cloudStorageRef.current) {
         const blob = await loadAudioBlob(deck.audio.key);
         if (blob) {
           try {
@@ -414,8 +414,10 @@ export const App: React.FC = () => {
             console.error('[publishDeckFirebase] falha upload audio', err);
             appendPublishLog(deck.id, 'Falha upload áudio: ' + (err?.code || err?.message || String(err)));
           }
+        } else {
+          appendPublishLog(deck.id, 'Áudio não encontrado no storage local (IndexedDB) para chave '+ deck.audio.key);
         }
-      }
+  }
       setFirebaseStatus('Publicado');
       console.log('[publishDeckFirebase] finalizado com sucesso');
       appendPublishLog(deck.id, 'Publicação concluída com sucesso.');
@@ -619,6 +621,40 @@ export const App: React.FC = () => {
               {remoteOnly.map(r => (
                 <div key={r.cloudId} className="answer-box" style={{ display:'flex', flexDirection:'column', gap:4 }}>
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+          {firebaseEnabled && (
+            <section className="card stack" style={{ gap:12 }}>
+              <div className="card-header">Debug Firebase</div>
+              <div className="caption">Testes rápidos para validar permissões do Storage e Firestore.</div>
+              <div className="stack" style={{ gap:8 }}>
+                <button className="btn" type="button" onClick={async ()=> {
+                  if (!cloudStorageRef.current) { alert('Storage não inicializado'); return; }
+                  try {
+                    const blob = new Blob(["test-audio"], { type: 'audio/mpeg' });
+                    const { uploadDeckAudio } = await import('./firebase/storage');
+                    const res = await uploadDeckAudio(cloudStorageRef.current, 'debug-test', blob, 'debug.mp3');
+                    console.log('[debugUploadAudio] sucesso', res);
+                    alert('Upload teste ok: '+ res.storagePath);
+                  } catch (e:any) {
+                    console.warn('[debugUploadAudio] erro', e);
+                    alert('Falha upload teste: '+ (e?.code || e?.message || String(e)));
+                  }
+                }}>Testar upload áudio (debug)</button>
+                <button className="btn btn-secondary" type="button" onClick={async ()=> {
+                  if (!cloudDbRef.current) { alert('DB não inicializado'); return; }
+                  try {
+                    const { collection, getDocs, query, where } = await import('firebase/firestore');
+                    const q = query(collection(cloudDbRef.current,'decks'), where('published','==', true));
+                    const snap = await getDocs(q);
+                    const count = snap.size;
+                    alert('Decks publicados: '+ count);
+                  } catch (e:any) {
+                    alert('Erro listar decks: '+ (e?.code || e?.message || String(e)));
+                  }
+                }}>Listar decks publicados</button>
+              </div>
+              <div className="caption" style={{opacity:0.7}}>Use estes botões apenas para diagnóstico; remova em produção final.</div>
+            </section>
+          )}
                     <strong>{r.name}</strong>
                     <span className="badge">{r.cards.length} cartas</span>
                   </div>
