@@ -17,5 +17,13 @@ service cloud.firestore {
     match /users/{userId}/flashcards/{docId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
+
+    // Media de decks (referências a URLs de áudio/vídeo). Somente owner cria/atualiza/deleta.
+    match /deckMedia/{mediaId} {
+      allow read: if resource.data.deckId != null && exists(/databases/$(database)/documents/decks/$(resource.data.deckId)) && get(/databases/$(database)/documents/decks/$(resource.data.deckId)).data.published == true
+        || (request.auth != null && request.auth.uid == resource.data.ownerId);
+      allow create: if request.auth != null && request.resource.data.ownerId == request.auth.uid;
+      allow update, delete: if request.auth != null && request.auth.uid == resource.data.ownerId;
+    }
   }
 }
