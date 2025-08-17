@@ -589,37 +589,8 @@ export const App: React.FC = () => {
           <input type="checkbox" checked={autoAvaliarVoz} onChange={e => setAutoAvaliarVoz(e.target.checked)} /> Auto avaliar resposta de voz (estudo)
         </label>
       </section>
-      <section className="card stack" style={{ gap: 14 }}>
-        <div className="card-header">Sincronização Nuvem (Beta)</div>
-        <label className="inline" style={{ fontSize:14 }}>
-          <input type="checkbox" checked={cloudCfg.enabled} onChange={e=> setCloudCfg(c=> ({ ...c, enabled: e.target.checked }))} /> Ativar
-        </label>
-        {cloudCfg.enabled && (
-          <div className="stack" style={{ gap:8 }}>
-            <input placeholder="User ID" value={cloudCfg.userId} onChange={e=> setCloudCfg(c=> ({ ...c, userId: e.target.value }))} />
-            <input placeholder="apiKey" value={cloudCfg.apiKey} onChange={e=> setCloudCfg(c=> ({ ...c, apiKey: e.target.value }))} />
-            <input placeholder="authDomain" value={cloudCfg.authDomain} onChange={e=> setCloudCfg(c=> ({ ...c, authDomain: e.target.value }))} />
-            <input placeholder="projectId" value={cloudCfg.projectId} onChange={e=> setCloudCfg(c=> ({ ...c, projectId: e.target.value }))} />
-            <label className="inline" style={{ fontSize:12 }}>
-              <input type="checkbox" checked={!!cloudCfg.auto} onChange={e=> setCloudCfg(c=> ({ ...c, auto: e.target.checked }))} /> Auto-upload
-            </label>
-            <div className="inline" style={{ gap:8, flexWrap:'wrap' }}>
-              <button className="btn" type="button" onClick={performUpload}>Enviar agora</button>
-              <button className="btn btn-secondary" type="button" onClick={performDownload}>Baixar</button>
-            </div>
-            <div className="caption">Status: {cloudStatus || '—'} {cloudCfg.lastSync && `· Último: ${new Date(cloudCfg.lastSync).toLocaleTimeString()}`}</div>
-            <div className="caption">Áudios grandes ainda não sincronizados. Apenas metadados.</div>
-            <div className="caption" style={{ color:'#7ccfff' }}>Firebase (Fase 1) em preparação — publicação cloud dedicada virá em seguida.</div>
-          </div>
-        )}
-      </section>
-      {firebaseAvailable && (
-        <section className="card stack" style={{ gap:14 }}>
-          <div className="card-header">Firebase Cloud</div>
-          <div className="caption">Sincronização cloud ativa por padrão.</div>
-          <div className="caption">Status: {firebaseStatus || '…'} {firebaseUid && `· UID ${firebaseUid.slice(0,6)}`}</div>
-        </section>
-      )}
+  {/* UI de sincronização legado removida */}
+  {/* Card de status Firebase oculto para simplificar UI */}
     </>
   );
 
