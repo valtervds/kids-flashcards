@@ -12,6 +12,8 @@ import { gerarDica, obterRespostaCorretaPreferida } from './utils/scoring';
 import { useLocalDecks } from './features/decks/useLocalDecks';
 import { useProgress } from './features/study/hooks/useProgress';
 import { useStudySession } from './features/study/hooks/useStudySession';
+import { useStats } from './features/study/hooks/useStats';
+import { useAudioFeedback } from './features/study/hooks/useAudioFeedback';
 import { DeckImport } from './components/DeckImport';
 // Imports estáticos para evitar falhas de carregamento dinâmico em GitHub Pages (chunks 404)
 import { createDeck, updateDeckDoc, listenPublishedDecks, deleteDeckDoc } from './firebase/decksRepo';
@@ -129,12 +131,7 @@ export const App: React.FC = () => {
   // Decks locais via hook
   const { decks, setDecks } = useLocalDecks();
 
-  const loadStats = (): Record<string, DeckStats> => {
-    try { const raw = localStorage.getItem('deck.stats'); if (raw) return JSON.parse(raw); } catch { /* ignore */ }
-    return {};
-  };
-  const [stats, setStats] = useState<Record<string, DeckStats>>(loadStats);
-  useEffect(() => { try { localStorage.setItem('deck.stats', JSON.stringify(stats)); } catch { /* ignore */ } }, [stats]);
+  const { stats, recordAttempt, recordSession } = useStats();
 
   const [currentDeckId, setCurrentDeckId] = useState<string>('default');
   const getCurrentDeck = () => {
@@ -157,7 +154,7 @@ export const App: React.FC = () => {
   const [revelarQtde, setRevelarQtde] = useState(0);
   const [mostrarRespostaCorreta, setMostrarRespostaCorreta] = useState(false);
   const [sonsAtivos, setSonsAtivos] = useState(true);
-  const [audioPronto, setAudioPronto] = useState(false);
+  const { audioOkRef, audioErroRef, safePlay, audioPronto } = useAudioFeedback(sonsAtivos);
   const [inicioPerguntaTs, setInicioPerguntaTs] = useState(Date.now());
   const [ultimoTempoRespostaMs, setUltimoTempoRespostaMs] = useState<number | null>(null);
   // Histórico de pontuações por deck/cartão via hook dedicado
@@ -382,45 +379,7 @@ export const App: React.FC = () => {
   // Fallback: enquanto nenhum deck cloud carregado ainda, continua mostrando decks locais ativos
   const studyDeckSource = firebaseEnabled ? (cloudDecks.length ? cloudDecks : decks.filter(d=> d.active)) : decks.filter(d=> d.active);
 
-  // Áudio refs
-  const audioOkRef = useRef<HTMLAudioElement | null>(null);
-  const audioErroRef = useRef<HTMLAudioElement | null>(null);
-  const interagiuRef = useRef(false);
-
-  // Marcar primeira interação para liberar WebAudio
-  useEffect(() => {
-    const marcar = () => { interagiuRef.current = true; };
-    window.addEventListener('pointerdown', marcar, { once: true });
-    window.addEventListener('keydown', marcar, { once: true });
-    return () => { window.removeEventListener('pointerdown', marcar); window.removeEventListener('keydown', marcar); };
-  }, []);
-
-  // Gera tons via Web Audio
-  const gerarTons = (padrao: number[]) => {
-    if (!sonsAtivos || !interagiuRef.current) return;
-    const Ctx: any = (window as any).AudioContext || (window as any).webkitAudioContext;
-    if (!Ctx) return;
-    try {
-      const ctx = new Ctx(); let t = ctx.currentTime;
-      padrao.forEach(freq => {
-        const osc = ctx.createOscillator(); const gain = ctx.createGain();
-        osc.type = 'sine'; osc.frequency.setValueAtTime(freq, t);
-        osc.connect(gain); gain.connect(ctx.destination);
-        gain.gain.setValueAtTime(0.0001, t);
-        gain.gain.exponentialRampToValueAtTime(0.35, t + 0.02);
-        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.28);
-        osc.start(t); osc.stop(t + 0.3); t += 0.18;
-      });
-      setAudioPronto(true);
-    } catch { /* ignore */ }
-  };
-
-  const safePlay = (tipo: 'ok' | 'erro') => {
-    if (!sonsAtivos) return;
-    if (tipo === 'ok') gerarTons([880, 1320]); else gerarTons([220, 180]);
-    const el = (tipo === 'ok' ? audioOkRef.current : audioErroRef.current);
-    try { if (el) { el.currentTime = 0; el.play().catch(()=>{}); } } catch {/* */}
-  };
+  // Áudio agora via hook useAudioFeedback
 
   // Helpers de dica e resposta correta movidos para utils/scoring
 
@@ -453,11 +412,7 @@ export const App: React.FC = () => {
     setUltimoTempoRespostaMs(Date.now() - inicioPerguntaTs);
     if (res.correto) safePlay('ok'); else safePlay('erro');
     // atualizar estatísticas
-    setStats(prev => {
-      const id = usandoDeckImportado ? currentDeckId : 'default';
-      const cur = prev[id] || { attempts: 0, correct: 0, sessions: 0 };
-      return { ...prev, [id]: { ...cur, attempts: cur.attempts + 1, correct: cur.correct + (res.correto ? 1 : 0) } };
-    });
+  recordAttempt(usandoDeckImportado ? currentDeckId : 'default', res.correto);
     // registrar progresso por cartão
   const deckKey = usandoDeckImportado ? currentDeckId : (getCurrentDeck()?.cloudId ? getCurrentDeck()!.id : 'default');
     setProgress(prev => {
@@ -479,11 +434,7 @@ export const App: React.FC = () => {
     setRespostaEntrada(''); setResultado(null); setMostrarRespostaCorreta(false); setOrigemUltimaEntrada(null);
     setRevelarQtde(0); setUltimoTempoRespostaMs(null); setInicioPerguntaTs(Date.now());
     if (perguntas.length && (indice + 1) % perguntas.length === 0) {
-      setStats(prev => {
-        const id = usandoDeckImportado ? currentDeckId : 'default';
-        const cur = prev[id] || { attempts: 0, correct: 0, sessions: 0 };
-        return { ...prev, [id]: { ...cur, sessions: cur.sessions + 1 } };
-      });
+  recordSession(usandoDeckImportado ? currentDeckId : 'default');
       if (firebaseEnabled && getCurrentDeck()?.cloudId && firebaseUid && cloudDbRef.current) {
         queueSessionIncrement(getCurrentDeck()!.cloudId!);
         scheduleFlush(cloudDbRef.current, firebaseUid);
