@@ -233,6 +233,71 @@ export const App: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cloudCfg.enabled, cloudCfg.userId]);
 
+  // --------- Firebase Cloud (publicação decks) ---------
+  const safeEnv = (k: string) => {
+    const winAny: any = (typeof window !== 'undefined') ? window : {};
+    const vite = winAny.__VITE_ENV__ || {}; // possibilidade de injetar manualmente em index.html se quiser
+    const proc: any = (typeof process !== 'undefined') ? process : {};
+    return vite[k] || proc.env?.[k] || undefined;
+  };
+  const firebaseEnv = {
+    apiKey: safeEnv('VITE_FB_API_KEY'),
+    authDomain: safeEnv('VITE_FB_AUTH_DOMAIN'),
+    projectId: safeEnv('VITE_FB_PROJECT_ID'),
+    storageBucket: safeEnv('VITE_FB_STORAGE_BUCKET'),
+  };
+  const firebaseAvailable = !!firebaseEnv.apiKey && process.env.NODE_ENV !== 'test';
+  const [firebaseEnabled, setFirebaseEnabled] = useState(false);
+  const [firebaseStatus, setFirebaseStatus] = useState('');
+  const [firebaseUid, setFirebaseUid] = useState<string | null>(null);
+  const cloudDbRef = useRef<any>(null);
+  const cloudStorageRef = useRef<any>(null);
+  const [cloudDecks, setCloudDecks] = useState<Deck[]>([]);
+  const initFirebaseFull = async () => {
+    if (!firebaseAvailable || cloudDbRef.current) return;
+    try {
+      setFirebaseStatus('Conectando...');
+      const { initFirebaseApp, ensureAnonymousAuth } = await import('./firebase/app');
+      const { listenPublishedDecks } = await import('./firebase/decksRepo');
+      const { db, auth, storage } = await initFirebaseApp(firebaseEnv as any);
+      const uid = await ensureAnonymousAuth(auth);
+      setFirebaseUid(uid);
+      cloudDbRef.current = db; cloudStorageRef.current = storage;
+      listenPublishedDecks(db, (list: any[]) => {
+        const mapped: Deck[] = list.map((d: any) => ({ id: d.id, name: d.name, active: true, createdAt: Date.now(), cards: d.cards || [], published: d.published, cloudId: d.id, audio: d.audioMeta ? { name: d.audioMeta.fileName, size: d.audioMeta.size||0, type: d.audioMeta.contentType||'audio/mpeg', key: d.audioMeta.storagePath } : undefined }));
+        setCloudDecks(mapped);
+      });
+      setFirebaseStatus('Online');
+    } catch (e) { console.warn(e); setFirebaseStatus('Erro init'); }
+  };
+  useEffect(()=> { if (firebaseEnabled) initFirebaseFull(); }, [firebaseEnabled]);
+  const publishDeckFirebase = async (deck: Deck) => {
+    if (!firebaseEnabled) return alert('Firebase não habilitado');
+    if (!cloudDbRef.current) return alert('Firebase não pronto');
+    try {
+      setFirebaseStatus('Publicando...');
+      const { createDeck, updateDeckDoc } = await import('./firebase/decksRepo');
+      let cloudId = deck.cloudId;
+      if (!cloudId) {
+        cloudId = await createDeck(cloudDbRef.current, { ownerId: firebaseUid || 'anon', name: deck.name, active: deck.active, published: true, cards: deck.cards });
+        updateDeck(deck.id, { cloudId, published: true });
+      } else {
+        await updateDeckDoc(cloudDbRef.current, cloudId, { name: deck.name, active: deck.active, published: true, cards: deck.cards });
+      }
+      if (deck.audio && cloudStorageRef.current) {
+        const blob = await loadAudioBlob(deck.audio.key);
+        if (blob) {
+          const { uploadDeckAudio } = await import('./firebase/storage');
+            const up = await uploadDeckAudio(cloudStorageRef.current, cloudId!, blob, deck.audio.name);
+            await updateDeckDoc(cloudDbRef.current, cloudId!, { audioMeta: { fileName: deck.audio.name, storagePath: up.storagePath, contentType: deck.audio.type, size: deck.audio.size }, published: true });
+        }
+      }
+      setFirebaseStatus('Publicado');
+      alert('Deck publicado na nuvem.');
+    } catch (e) { console.error(e); setFirebaseStatus('Erro publicar'); alert('Falha ao publicar deck'); }
+  };
+  const studyDeckSource = firebaseEnabled ? cloudDecks : decks.filter(d=> d.active);
+
   // Áudio refs
   const audioOkRef = useRef<HTMLAudioElement | null>(null);
   const audioErroRef = useRef<HTMLAudioElement | null>(null);
@@ -500,6 +565,19 @@ export const App: React.FC = () => {
           </div>
         )}
       </section>
+      <section className="card stack" style={{ gap:14 }}>
+        <div className="card-header">Firebase Decks (Fase 1)</div>
+        {!firebaseAvailable && <div className="caption">Variáveis VITE_FB_* ausentes (modo cloud desativado).</div>}
+        {firebaseAvailable && (
+          <>
+            <label className="inline" style={{ fontSize:14 }}>
+              <input type="checkbox" checked={firebaseEnabled} onChange={e=> setFirebaseEnabled(e.target.checked)} /> Habilitar decks cloud
+            </label>
+            <div className="caption">Status: {firebaseStatus || '—'} {firebaseUid && `· UID ${firebaseUid.slice(0,6)}`}</div>
+            <div className="caption">Ao habilitar você pode publicar baralhos em "Baralhos".</div>
+          </>
+        )}
+      </section>
     </>
   );
 
@@ -614,8 +692,10 @@ export const App: React.FC = () => {
                     )}
                   </div>
                   <AddCardForm deckId={d.id} />
-                  <div className="actions-row" style={{ marginTop:4 }}>
+                  <div className="actions-row" style={{ marginTop:4, flexWrap:'wrap', gap:8 }}>
                     <button className="btn" type="button" onClick={()=> { setCurrentDeckId(d.id); setIndice(0); setView('study'); setResultado(null); setRespostaEntrada(''); setOrigemUltimaEntrada(null); }}>Estudar este</button>
+                    {firebaseEnabled && <button className="btn btn-secondary" type="button" onClick={()=> publishDeckFirebase(d)}>{d.cloudId? 'Atualizar Cloud' : 'Publicar Cloud'}</button>}
+                    {d.published && <span className="badge">Publicado</span>}
                   </div>
                 </div>
               )}
@@ -628,13 +708,13 @@ export const App: React.FC = () => {
   };
 
   const HomeView = () => {
-  const list = decks.filter(d=> d.active).map(d=> ({ id:d.id, name:d.name, total:d.cards.length, active:d.active }));
+  const list = studyDeckSource.map(d=> ({ id:d.id, name:d.name, total:d.cards.length, active:d.active, published: d.published }));
     const cardStyle: React.CSSProperties = { display:'flex', flexDirection:'column', gap:6 };
     return (
       <>
         <header className="stack" style={{ gap:4 }}>
-          <h1>Seus Baralhos</h1>
-          <div className="subtitle">Crie ou ative baralhos para estudar</div>
+          <h1>{firebaseEnabled ? 'Baralhos (Cloud)' : 'Seus Baralhos'}</h1>
+          <div className="subtitle">{firebaseEnabled ? 'Decks publicados disponíveis online' : 'Crie ou ative baralhos para estudar'}</div>
         </header>
         <div className="stack" style={{ gap:16 }}>
           {list.map(d => {
@@ -647,6 +727,7 @@ export const App: React.FC = () => {
                   <span className="badge">{d.total} cartas</span>
                 </div>
                 <div className="caption">Tentativas: {st.attempts} · Acertos: {st.correct} · Taxa: {rate}% · Sessões: {st.sessions}</div>
+                {d.published && <div className="caption" style={{ color:'#7ccfff' }}>Publicado</div>}
                 {decks.find(x=> x.id===d.id)?.audio && <DeckAudioInline meta={decks.find(x=> x.id===d.id)!.audio!} />}
                 <div className="actions-row" style={{ marginTop:4 }}>
                   <button className="btn" type="button" onClick={()=> { setCurrentDeckId(d.id); setIndice(0); setView('study'); setRespostaEntrada(''); setOrigemUltimaEntrada(null); setResultado(null); }}>Estudar</button>
