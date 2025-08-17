@@ -140,7 +140,13 @@ export const App: React.FC = () => {
   useEffect(() => { try { localStorage.setItem('deck.stats', JSON.stringify(stats)); } catch { /* ignore */ } }, [stats]);
 
   const [currentDeckId, setCurrentDeckId] = useState<string>('default');
-  const getCurrentDeck = () => (currentDeckId === 'default' ? null : decks.find(d => d.id === currentDeckId) || null);
+  const getCurrentDeck = () => {
+    if (currentDeckId === 'default') return null;
+    const local = decks.find(d => d.id === currentDeckId);
+    if (local) return local;
+    const remote = cloudDecks.find(d => d.id === currentDeckId);
+    return remote || null;
+  };
   const usandoDeckImportado = !!getCurrentDeck();
   const perguntas = getCurrentDeck() ? getCurrentDeck()!.cards.map(c => c.question) : defaultPerguntas;
 
@@ -512,8 +518,16 @@ export const App: React.FC = () => {
     </nav>
   );
 
-  const StudyView = () => (
-    <>
+  const StudyView = () => {
+    if (!perguntas.length) {
+      return (
+        <section className="card" style={{ padding:20 }}>
+          <h2>Nenhuma pergunta</h2>
+          <div className="caption">Este baralho não possui cartas ou falhou ao carregar. Volte e escolha outro.</div>
+        </section>
+      );
+    }
+    return (<>
       <header className="stack" style={{ gap: 4 }}>
         <h1>Kids Flashcards</h1>
         <div className="subtitle">Pratique e aprenda de forma interativa</div>
@@ -595,7 +609,7 @@ export const App: React.FC = () => {
         </div>
       )}
     </>
-  );
+  ); };
 
   const SettingsView = () => (
     <>
