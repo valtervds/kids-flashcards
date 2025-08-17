@@ -70,7 +70,7 @@ export const App: React.FC = () => {
 
   // Estrutura multi-deck
   interface DeckAudioMeta { name: string; size: number; type: string; key: string; }
-  interface Deck { id: string; name: string; active: boolean; cards: Flashcard[]; createdAt: number; audio?: DeckAudioMeta; }
+  interface Deck { id: string; name: string; active: boolean; cards: Flashcard[]; createdAt: number; audio?: DeckAudioMeta; published?: boolean; cloudId?: string; }
 
   // ---------------- Audio Storage (IndexedDB) ----------------
   const openAudioDb = () => new Promise<IDBDatabase | null>((resolve) => {
@@ -496,6 +496,7 @@ export const App: React.FC = () => {
             </div>
             <div className="caption">Status: {cloudStatus || '—'} {cloudCfg.lastSync && `· Último: ${new Date(cloudCfg.lastSync).toLocaleTimeString()}`}</div>
             <div className="caption">Áudios grandes ainda não sincronizados. Apenas metadados.</div>
+            <div className="caption" style={{ color:'#7ccfff' }}>Firebase (Fase 1) em preparação — publicação cloud dedicada virá em seguida.</div>
           </div>
         )}
       </section>
