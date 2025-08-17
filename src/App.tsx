@@ -29,6 +29,7 @@ import { DeckImport } from './components/DeckImport';
 import { createDeck, updateDeckDoc, listenPublishedDecks, deleteDeckDoc } from './firebase/decksRepo';
 import { uploadDeckAudio } from './firebase/storage';
 import { listenProgress, updateProgress } from './firebase/progressRepo';
+import { createDeckMedia } from './firebase/deckMediaRepo';
 
 // Declaração global para suportar webkitSpeechRecognition
 declare global { interface Window { webkitSpeechRecognition?: any; SpeechRecognition?: any; } }
@@ -468,6 +469,16 @@ export const App: React.FC = () => {
           // Caso 2: URL direta já hospedada -> apenas salva metadata apontando para downloadUrl
             await updateDeckDoc(cloudDbRef.current, cloudId!, { audioMeta: { fileName: deck.audio.name, storagePath: deck.audio.key, downloadUrl: deck.audio.downloadUrl || deck.audio.key, contentType: deck.audio.type, size: deck.audio.size }, published: true });
             appendPublishLog(deck.id, 'Áudio remoto (URL) referenciado sem upload.');
+        }
+      }
+      // Publicar relação de vídeo se existir (URL remota). Por ora não faz upload, apenas referência.
+      if (deck.video && deck.video.key.startsWith('http')) {
+        try {
+          appendPublishLog(deck.id, 'Registrando vídeo...');
+          await createDeckMedia(cloudDbRef.current, { deckId: cloudId!, ownerId: firebaseUid, kind: 'video', url: deck.video.downloadUrl || deck.video.remotePath || deck.video.key, contentType: deck.video.type, posterUrl: (deck.video as any).posterUrl });
+          appendPublishLog(deck.id, 'Vídeo registrado.');
+        } catch (e:any) {
+          appendPublishLog(deck.id, 'Falha registrar vídeo: ' + (e?.code||e?.message||String(e)));
         }
       }
       setFirebaseStatus('Publicado');
