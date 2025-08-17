@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
+import { initFirebase, loadCloud, saveCloud } from './cloudSync';
 import { MascoteTTS } from './components/MascoteTTS';
 import { Stars } from './components/Stars';
 import { avaliar, respostasCorretas, normalizar } from './evaluation';
@@ -155,6 +156,46 @@ export const App: React.FC = () => {
   const [progress, setProgress] = useState<ProgressMap>(loadProgress);
   useEffect(() => { try { localStorage.setItem('deck.progress', JSON.stringify(progress)); } catch { /* ignore */ } }, [progress]);
   const [mostrarHistorico, setMostrarHistorico] = useState(false);
+  // --------- Cloud Sync State ---------
+  interface CloudSettings { enabled: boolean; userId: string; apiKey: string; authDomain: string; projectId: string; lastSync?: number; auto?: boolean; }
+  const loadCloudSettings = (): CloudSettings => { try { const raw = localStorage.getItem('cloud.settings'); if (raw) return JSON.parse(raw); } catch { /* ignore */ } return { enabled:false, userId:'', apiKey:'', authDomain:'', projectId:'', auto:false }; };
+  const [cloudCfg, setCloudCfg] = useState<CloudSettings>(loadCloudSettings);
+  useEffect(()=> { try { localStorage.setItem('cloud.settings', JSON.stringify(cloudCfg)); } catch {/* */} }, [cloudCfg]);
+  const [cloudStatus, setCloudStatus] = useState<string>('');
+  const dbRef = useRef<any>(null);
+  const ensureDb = () => {
+    if (!cloudCfg.enabled) return null;
+    if (!dbRef.current) {
+      try { dbRef.current = initFirebase({ apiKey: cloudCfg.apiKey, authDomain: cloudCfg.authDomain, projectId: cloudCfg.projectId }); } catch (e) { console.warn(e); }
+    }
+    return dbRef.current;
+  };
+  const performUpload = async () => {
+    const db = ensureDb(); if (!db || !cloudCfg.userId) { setCloudStatus('Config incompleta'); return; }
+    setCloudStatus('Enviando...');
+    await saveCloud(db, cloudCfg.userId, { decks, stats, progress, updatedAt: Date.now() });
+    setCloudCfg(cfg => ({ ...cfg, lastSync: Date.now() }));
+    setCloudStatus('Sincronizado (upload)');
+  };
+  const performDownload = async () => {
+    const db = ensureDb(); if (!db || !cloudCfg.userId) { setCloudStatus('Config incompleta'); return; }
+    setCloudStatus('Carregando...');
+    const data = await loadCloud(db, cloudCfg.userId);
+    if (data) {
+      // merge naive: replace local
+      setDecks(data.decks || []);
+      setStats(data.stats || {});
+      setProgress(data.progress || {});
+      setCloudStatus('Dados baixados');
+    } else setCloudStatus('Nenhum dado remoto');
+    setCloudCfg(cfg => ({ ...cfg, lastSync: Date.now() }));
+  };
+  // auto-sync lightweight (only on mount & when decks/stats/progress change, debounce)
+  useEffect(()=> {
+    if (!cloudCfg.enabled || !cloudCfg.auto) return;
+    const t = setTimeout(()=> { performUpload(); }, 1200);
+    return () => clearTimeout(t);
+  }, [decks, stats, progress]);
 
   // Áudio refs
   const audioOkRef = useRef<HTMLAudioElement | null>(null);
@@ -398,6 +439,29 @@ export const App: React.FC = () => {
         <label className="inline" style={{ fontSize: 14 }}>
           <input type="checkbox" checked={autoAvaliarVoz} onChange={e => setAutoAvaliarVoz(e.target.checked)} /> Auto avaliar resposta de voz (estudo)
         </label>
+      </section>
+      <section className="card stack" style={{ gap: 14 }}>
+        <div className="card-header">Sincronização Nuvem (Beta)</div>
+        <label className="inline" style={{ fontSize:14 }}>
+          <input type="checkbox" checked={cloudCfg.enabled} onChange={e=> setCloudCfg(c=> ({ ...c, enabled: e.target.checked }))} /> Ativar
+        </label>
+        {cloudCfg.enabled && (
+          <div className="stack" style={{ gap:8 }}>
+            <input placeholder="User ID" value={cloudCfg.userId} onChange={e=> setCloudCfg(c=> ({ ...c, userId: e.target.value }))} />
+            <input placeholder="apiKey" value={cloudCfg.apiKey} onChange={e=> setCloudCfg(c=> ({ ...c, apiKey: e.target.value }))} />
+            <input placeholder="authDomain" value={cloudCfg.authDomain} onChange={e=> setCloudCfg(c=> ({ ...c, authDomain: e.target.value }))} />
+            <input placeholder="projectId" value={cloudCfg.projectId} onChange={e=> setCloudCfg(c=> ({ ...c, projectId: e.target.value }))} />
+            <label className="inline" style={{ fontSize:12 }}>
+              <input type="checkbox" checked={!!cloudCfg.auto} onChange={e=> setCloudCfg(c=> ({ ...c, auto: e.target.checked }))} /> Auto-upload
+            </label>
+            <div className="inline" style={{ gap:8, flexWrap:'wrap' }}>
+              <button className="btn" type="button" onClick={performUpload}>Enviar agora</button>
+              <button className="btn btn-secondary" type="button" onClick={performDownload}>Baixar</button>
+            </div>
+            <div className="caption">Status: {cloudStatus || '—'} {cloudCfg.lastSync && `· Último: ${new Date(cloudCfg.lastSync).toLocaleTimeString()}`}</div>
+            <div className="caption">Áudios grandes ainda não sincronizados. Apenas metadados.</div>
+          </div>
+        )}
       </section>
     </>
   );
