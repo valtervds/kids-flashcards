@@ -14,8 +14,6 @@ concurrency:
   group: 'pages'
   cancel-in-progress: true
 
-env:
-  NODE_ENV: production
 
 jobs:
   build:
@@ -28,12 +26,12 @@ jobs:
         with:
           node-version: 20
           cache: 'npm'
-      - name: Install deps
-        run: npm ci || npm install
+      - name: Install deps (with devDependencies)
+        run: npm ci
       - name: Tests
         run: npm test --silent
       - name: Build
-        run: npm run build
+        run: NODE_ENV=production npm run build
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
