@@ -1,6 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { initFirebase, loadCloud, saveCloud } from './cloudSync'; // legado sync simples
+import { resolveFirebaseConfig } from './firebase/defaultConfig';
 // Fase 1 Firebase infra (usado progressivamente). Variáveis esperadas via Vite env:
 // import.meta.env.VITE_FB_API_KEY etc. Integração completa ocorrerá em fases.
 import { MascoteTTS } from './components/MascoteTTS';
@@ -240,12 +241,7 @@ export const App: React.FC = () => {
     const proc: any = (typeof process !== 'undefined') ? process : {};
     return vite[k] || proc.env?.[k] || undefined;
   };
-  const firebaseEnv = {
-    apiKey: safeEnv('VITE_FB_API_KEY'),
-    authDomain: safeEnv('VITE_FB_AUTH_DOMAIN'),
-    projectId: safeEnv('VITE_FB_PROJECT_ID'),
-    storageBucket: safeEnv('VITE_FB_STORAGE_BUCKET'),
-  };
+  const firebaseEnv = resolveFirebaseConfig();
   const firebaseAvailable = !!firebaseEnv.apiKey && process.env.NODE_ENV !== 'test';
   const [firebaseEnabled, setFirebaseEnabled] = useState<boolean>(() => { try { return localStorage.getItem('fb.enabled') === '1'; } catch { return false; } });
   const [firebaseStatus, setFirebaseStatus] = useState('');
