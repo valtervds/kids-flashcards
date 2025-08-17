@@ -163,6 +163,11 @@ export const App: React.FC = () => {
   useEffect(()=> { try { localStorage.setItem('cloud.settings', JSON.stringify(cloudCfg)); } catch {/* */} }, [cloudCfg]);
   const [cloudStatus, setCloudStatus] = useState<string>('');
   const dbRef = useRef<any>(null);
+  const localChangeRef = useRef<number>(0);
+  if (localChangeRef.current === 0) {
+    try { const v = localStorage.getItem('cloud.localChange'); localChangeRef.current = v ? parseInt(v) : Date.now(); } catch { localChangeRef.current = Date.now(); }
+  }
+  const markLocalChange = () => { localChangeRef.current = Date.now(); try { localStorage.setItem('cloud.localChange', String(localChangeRef.current)); } catch {/* */} };
   const ensureDb = () => {
     if (!cloudCfg.enabled) return null;
     if (!dbRef.current) {
@@ -187,6 +192,7 @@ export const App: React.FC = () => {
       setStats(data.stats || {});
       setProgress(data.progress || {});
       setCloudStatus('Dados baixados');
+      markLocalChange();
     } else setCloudStatus('Nenhum dado remoto');
     setCloudCfg(cfg => ({ ...cfg, lastSync: Date.now() }));
   };
@@ -196,6 +202,34 @@ export const App: React.FC = () => {
     const t = setTimeout(()=> { performUpload(); }, 1200);
     return () => clearTimeout(t);
   }, [decks, stats, progress]);
+  // track local modifications
+  useEffect(()=> { if(!cloudCfg.enabled) return; markLocalChange(); }, [decks, stats, progress]);
+  // initial sync decision: download if remote newer, else (optionally) upload
+  useEffect(()=> {
+    const run = async () => {
+      if (!cloudCfg.enabled || !cloudCfg.userId) return;
+      const db = ensureDb(); if (!db) return;
+      try {
+        setCloudStatus(s => s || 'Verificando...');
+        const data = await loadCloud(db, cloudCfg.userId);
+        if (!data) { setCloudStatus('Sem remoto (primeiro upload esperado)'); return; }
+        if (data.updatedAt > localChangeRef.current) {
+          setDecks(data.decks || []);
+          setStats(data.stats || {});
+          setProgress(data.progress || {});
+          setCloudStatus('Atualizado do remoto');
+          markLocalChange();
+        } else if (cloudCfg.auto) {
+          // local é mais novo e auto está on: sobe
+          await performUpload();
+        } else {
+          setCloudStatus('Local mais novo (aguardando upload manual)');
+        }
+      } catch (e) { console.warn(e); setCloudStatus('Falha sync inicial'); }
+    };
+    run();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cloudCfg.enabled, cloudCfg.userId]);
 
   // Áudio refs
   const audioOkRef = useRef<HTMLAudioElement | null>(null);
