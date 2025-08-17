@@ -5,7 +5,7 @@
 // Audio blobs are large; for now we only sync deck metadata (audio meta) but NOT the actual audio blob.
 // We later can add upload to Firebase Storage if needed.
 
-import { initializeApp, type FirebaseApp } from 'firebase/app';
+import { initializeApp, type FirebaseApp, getApps, getApp } from 'firebase/app';
 import { getFirestore, doc, getDoc, setDoc } from 'firebase/firestore';
 
 export interface CloudConfig { apiKey: string; authDomain: string; projectId: string; }
@@ -14,7 +14,15 @@ export interface CloudBundle { decks: any; stats: any; progress: any; updatedAt:
 let app: FirebaseApp | null = null;
 
 export const initFirebase = (cfg: CloudConfig) => {
-  if (!app) app = initializeApp(cfg);
+  if (!app) {
+    // Reaproveita app existente se já houver (evita erro app/duplicate-app em conjunto com novo fluxo Firebase)
+    const apps = getApps();
+    if (apps.length) {
+      try { app = getApp(); } catch { app = initializeApp(cfg); }
+    } else {
+      app = initializeApp(cfg);
+    }
+  }
   return getFirestore(app);
 };
 
