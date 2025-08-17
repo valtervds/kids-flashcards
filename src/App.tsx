@@ -629,14 +629,39 @@ export const App: React.FC = () => {
                 <button className="btn" type="button" onClick={async ()=> {
                   if (!cloudStorageRef.current) { alert('Storage não inicializado'); return; }
                   try {
+                    console.log('[debugUploadAudio] iniciando teste');
+                    // Garante auth anônima (re-executa caso algo tenha falhado antes)
+                    try {
+                      const { ensureAnonymousAuth } = await import('./firebase/app');
+                      await ensureAnonymousAuth();
+                      console.log('[debugUploadAudio] auth uid', (window as any)?.firebaseAuth?.currentUser?.uid || 'verificar no console');
+                    } catch(authErr) {
+                      console.warn('[debugUploadAudio] falha garantir auth anon', authErr);
+                    }
                     const blob = new Blob(["test-audio"], { type: 'audio/mpeg' });
                     const { uploadDeckAudio } = await import('./firebase/storage');
+                    console.log('[debugUploadAudio] tentando upload path deck-audio/debug-test/...');
                     const res = await uploadDeckAudio(cloudStorageRef.current, 'debug-test', blob, 'debug.mp3');
                     console.log('[debugUploadAudio] sucesso', res);
                     alert('Upload teste ok: '+ res.storagePath);
                   } catch (e:any) {
                     console.warn('[debugUploadAudio] erro', e);
-                    alert('Falha upload teste: '+ (e?.code || e?.message || String(e)));
+                    // Tenta detectar se é erro de permissão (403) travestido de CORS
+                    if (e?.code === 'storage/unauthorized') {
+                      alert('Falha upload: não autorizado pelas regras do Storage. Verifique se publicou as regras e se o caminho deck-audio/* está permitido.');
+                    } else if (e?.message?.includes('CORS')) {
+                      alert('Falha upload (CORS). Possível bloqueio corporativo/proxy. Veja console para detalhes.');
+                    } else {
+                      alert('Falha upload teste: '+ (e?.code || e?.message || String(e)));
+                    }
+                    // Teste adicional: simples fetch GET para ver se domínio é acessível
+                    try {
+                      const testUrl = 'https://firebasestorage.googleapis.com/v0/b/flashcards-d5e0e.appspot.com/o/fake-object-does-not-exist.txt';
+                      const r = await fetch(testUrl);
+                      console.log('[debugUploadAudio] teste GET simples status', r.status);
+                    } catch(fetchErr) {
+                      console.warn('[debugUploadAudio] falha GET simples (pode ser rede/bloqueio)', fetchErr);
+                    }
                   }
                 }}>Testar upload áudio (debug)</button>
                 <button className="btn btn-secondary" type="button" onClick={async ()=> {
