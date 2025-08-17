@@ -8,6 +8,10 @@ import { MascoteTTS } from './components/MascoteTTS';
 import { Stars } from './components/Stars';
 import { avaliar, respostasCorretas, normalizar } from './evaluation';
 import { DeckImport, Flashcard } from './components/DeckImport';
+// Imports estáticos para evitar falhas de carregamento dinâmico em GitHub Pages (chunks 404)
+import { createDeck, updateDeckDoc, listenPublishedDecks, deleteDeckDoc } from './firebase/decksRepo';
+import { uploadDeckAudio } from './firebase/storage';
+import { listenProgress, updateProgress } from './firebase/progressRepo';
 
 // Declaração global para suportar webkitSpeechRecognition
 declare global { interface Window { webkitSpeechRecognition?: any; SpeechRecognition?: any; } }
@@ -254,23 +258,62 @@ export const App: React.FC = () => {
   const cloudDbRef = useRef<any>(null);
   const cloudStorageRef = useRef<any>(null);
   const [cloudDecks, setCloudDecks] = useState<Deck[]>([]);
+  // Log de publicação por deck (apenas sessão atual)
+  const [publishLogs, setPublishLogs] = useState<Record<string,string[]>>({});
+  const appendPublishLog = (deckId: string, msg: string) => {
+    setPublishLogs(prev => {
+      const list = prev[deckId] ? [...prev[deckId]] : [];
+      const carimbo = new Date().toLocaleTimeString();
+      list.push(`${carimbo} ${msg}`);
+      if (list.length > 100) list.splice(0, list.length - 100); // mantém últimos 100
+      return { ...prev, [deckId]: list };
+    });
+  };
   const remoteUnsubsRef = useRef<Record<string, () => void>>({});
   const initFirebaseFull = async () => {
     if (!firebaseAvailable || cloudDbRef.current) return;
     try {
       setFirebaseStatus('Conectando...');
       const { initFirebaseApp, ensureAnonymousAuth } = await import('./firebase/app');
-      const { listenPublishedDecks } = await import('./firebase/decksRepo');
       console.log('[firebase:init] config', firebaseEnv);
       const { db, auth, storage } = await initFirebaseApp(firebaseEnv as any);
       const uid = await ensureAnonymousAuth(auth);
       console.log('[firebase:init] anon uid', uid);
       setFirebaseUid(uid);
       cloudDbRef.current = db; cloudStorageRef.current = storage;
+      // Helpers de debug para investigar permission-denied
+      if (typeof window !== 'undefined') {
+        (window as any).__FB_DEBUG = {
+          async testReadAll() {
+            const { getDocs, collection } = await import('firebase/firestore');
+            try { const snap = await getDocs(collection(db,'decks')); console.log('[__FB_DEBUG.testReadAll] docs', snap.docs.map(d=>({id:d.id, ...d.data()}))); }
+            catch(e) { console.warn('[__FB_DEBUG.testReadAll] erro', e); }
+          },
+          async testReadPublished() {
+            const { getDocs, collection, query, where } = await import('firebase/firestore');
+            try { const q = query(collection(db,'decks'), where('published','==', true)); const snap = await getDocs(q); console.log('[__FB_DEBUG.testReadPublished] docs', snap.docs.map(d=>({id:d.id, ...d.data()}))); }
+            catch(e) { console.warn('[__FB_DEBUG.testReadPublished] erro', e); }
+          },
+          async createTestDeck() {
+            const { addDoc, collection, serverTimestamp } = await import('firebase/firestore');
+            try { const ref = await addDoc(collection(db,'decks'), { ownerId: uid, name: 'Debug Deck', active: true, published: true, version:1, cards: [], createdAt: serverTimestamp(), updatedAt: serverTimestamp() }); console.log('[__FB_DEBUG.createTestDeck] criado', ref.id); }
+            catch(e) { console.warn('[__FB_DEBUG.createTestDeck] erro', e); }
+          },
+          async getDeck(id:string) {
+            const { doc, getDoc, collection } = await import('firebase/firestore');
+            try { const ref = doc(collection(db,'decks'), id); const snap = await getDoc(ref); console.log('[__FB_DEBUG.getDeck]', id, snap.exists()? snap.data(): 'NÃO EXISTE'); }
+            catch(e) { console.warn('[__FB_DEBUG.getDeck] erro', e); }
+          }
+        };
+      }
       listenPublishedDecks(db, (list: any[]) => {
         console.log('[firebase:listener] published decks snapshot', list.length);
         const mapped: Deck[] = list.map((d: any) => ({ id: d.id, name: d.name, active: true, createdAt: Date.now(), cards: d.cards || [], published: d.published, cloudId: d.id, audio: d.audioMeta ? { name: d.audioMeta.fileName, size: d.audioMeta.size||0, type: d.audioMeta.contentType||'audio/mpeg', key: d.audioMeta.storagePath } : undefined }));
         setCloudDecks(mapped);
+      }, (err: any) => {
+        console.warn('[firebase:listener] decks error', err?.code || err?.message || err);
+        (window as any).__FB_DECKS_ERR = err;
+        setFirebaseStatus(s => s === 'Online' ? 'Online (listener erro - fallback polling)' : s);
       });
       setFirebaseStatus('Online');
     } catch (e:any) {
@@ -302,7 +345,6 @@ export const App: React.FC = () => {
       return;
     }
     (async () => {
-      const { listenProgress } = await import('./firebase/progressRepo');
       const ids = new Set<string>();
       cloudDecks.forEach(d => d.cloudId && ids.add(d.cloudId));
       decks.forEach(d => d.cloudId && ids.add(d.cloudId));
@@ -330,34 +372,57 @@ export const App: React.FC = () => {
   const publishDeckFirebase = async (deck: Deck) => {
     if (!firebaseEnabled) return alert('Firebase não habilitado');
     if (!cloudDbRef.current) return alert('Firebase não pronto');
+    if (!deck.cards.length) {
+      appendPublishLog(deck.id, 'Publicação cancelada: baralho vazio.');
+      return alert('Adicione pelo menos 1 carta antes de publicar (requisito das regras).');
+    }
     try {
-  console.log('[publishDeckFirebase] iniciando', { deckId: deck.id, cloudId: deck.cloudId, name: deck.name });
+      console.log('[publishDeckFirebase] iniciando', { deckId: deck.id, cloudId: deck.cloudId, name: deck.name });
+      appendPublishLog(deck.id, 'Iniciando publicação...');
       setFirebaseStatus('Publicando...');
-      const { createDeck, updateDeckDoc } = await import('./firebase/decksRepo');
       let cloudId = deck.cloudId;
       if (!cloudId) {
         cloudId = await createDeck(cloudDbRef.current, { ownerId: firebaseUid || 'anon', name: deck.name, active: deck.active, published: true, cards: deck.cards });
         updateDeck(deck.id, { cloudId, published: true });
-    console.log('[publishDeckFirebase] deck criado', { cloudId });
+        console.log('[publishDeckFirebase] deck criado', { cloudId });
+        appendPublishLog(deck.id, `Deck criado na nuvem (id=${cloudId}).`);
       } else {
         await updateDeckDoc(cloudDbRef.current, cloudId, { name: deck.name, active: deck.active, published: true, cards: deck.cards });
-    console.log('[publishDeckFirebase] deck atualizado', { cloudId });
+        console.log('[publishDeckFirebase] deck atualizado', { cloudId });
+        appendPublishLog(deck.id, `Deck atualizado (id=${cloudId}).`);
       }
       if (deck.audio && cloudStorageRef.current) {
         const blob = await loadAudioBlob(deck.audio.key);
         if (blob) {
-          const { uploadDeckAudio } = await import('./firebase/storage');
+          try {
+            appendPublishLog(deck.id, 'Enviando áudio...');
             const up = await uploadDeckAudio(cloudStorageRef.current, cloudId!, blob, deck.audio.name);
             await updateDeckDoc(cloudDbRef.current, cloudId!, { audioMeta: { fileName: deck.audio.name, storagePath: up.storagePath, contentType: deck.audio.type, size: deck.audio.size }, published: true });
-    console.log('[publishDeckFirebase] audio enviado', { cloudId, storagePath: up.storagePath });
+            console.log('[publishDeckFirebase] audio enviado', { cloudId, storagePath: up.storagePath });
+            appendPublishLog(deck.id, 'Áudio enviado e metadata salva.');
+          } catch (err:any) {
+            console.error('[publishDeckFirebase] falha upload audio', err);
+            appendPublishLog(deck.id, 'Falha upload áudio: ' + (err?.code || err?.message || String(err)));
+          }
         }
       }
       setFirebaseStatus('Publicado');
-  console.log('[publishDeckFirebase] finalizado com sucesso');
+      console.log('[publishDeckFirebase] finalizado com sucesso');
+      appendPublishLog(deck.id, 'Publicação concluída com sucesso.');
       alert('Deck publicado na nuvem.');
-    } catch (e) { console.error(e); setFirebaseStatus('Erro publicar'); alert('Falha ao publicar deck'); }
+    } catch (e:any) {
+      console.error('[publishDeckFirebase] erro', e);
+      const code = e?.code || e?.message || String(e);
+      setFirebaseStatus('Erro publicar');
+      appendPublishLog(deck.id, 'Erro: ' + code);
+      if (String(code).includes('permission-denied')) {
+        appendPublishLog(deck.id, 'Verifique regras Firestore: leitura pública de published==true e ownerId corresponde ao usuário.');
+      }
+      alert('Falha ao publicar deck (ver console). Código: ' + code);
+    }
   };
-  const studyDeckSource = firebaseEnabled ? cloudDecks : decks.filter(d=> d.active);
+  // Fallback: enquanto nenhum deck cloud carregado ainda, continua mostrando decks locais ativos
+  const studyDeckSource = firebaseEnabled ? (cloudDecks.length ? cloudDecks : decks.filter(d=> d.active)) : decks.filter(d=> d.active);
 
   // Áudio refs
   const audioOkRef = useRef<HTMLAudioElement | null>(null);
@@ -627,6 +692,16 @@ export const App: React.FC = () => {
   const updateCard = (deckId: string, index: number, card: Flashcard) => setDecks(prev => prev.map(d => d.id === deckId ? { ...d, cards: d.cards.map((c,i)=> i===index? card : c) } : d));
   const addCard = (deckId: string, card: Flashcard) => setDecks(prev => prev.map(d => d.id === deckId ? { ...d, cards: [...d.cards, card] } : d));
   const deleteCard = (deckId: string, index: number) => setDecks(prev => prev.map(d => d.id === deckId ? { ...d, cards: d.cards.filter((_,i)=>i!==index) } : d));
+  const cloneCloudDeck = (cloud: Deck) => {
+    // Evita duplicar se já houver local vinculado
+    const exists = decks.find(d => d.cloudId === cloud.cloudId);
+    if (exists) { alert('Já existe uma cópia local deste deck.'); return exists.id; }
+    const id = cloud.name.toLowerCase().replace(/[^a-z0-9]+/g,'-') + '-cloud-' + Date.now().toString(36).slice(-4);
+    const novo: Deck = { id, name: cloud.name, active: true, cards: cloud.cards, createdAt: Date.now(), cloudId: cloud.cloudId, published: true, audio: cloud.audio };
+    setDecks(prev => [...prev, novo]);
+    appendPublishLog(id, 'Clonado do cloud.');
+    return id;
+  };
 
   const AddCardForm: React.FC<{ deckId: string }> = ({ deckId }) => {
     const [q,setQ]=useState(''); const [a,setA]=useState('');
@@ -643,12 +718,33 @@ export const App: React.FC = () => {
     const [expanded, setExpanded] = useState<string | null>(null);
     const [newDeckName, setNewDeckName] = useState('');
     const [editingName, setEditingName] = useState('');
+    // Decks publicados disponíveis no cloud que ainda não possuem cópia local
+    const remoteOnly = cloudDecks.filter(cd => !decks.some(ld => ld.cloudId && ld.cloudId === cd.cloudId));
     return (
       <>
         <header className="stack" style={{ gap: 4 }}>
           <h1>Gerenciar Baralhos</h1>
           <div className="subtitle">Visualize, renomeie, ative ou edite as cartas</div>
         </header>
+        {firebaseEnabled && remoteOnly.length > 0 && (
+          <section className="card stack" style={{ gap:10 }}>
+            <div className="card-header">Baralhos na Nuvem (sem cópia local)</div>
+            <div className="stack" style={{ gap:10 }}>
+              {remoteOnly.map(r => (
+                <div key={r.cloudId} className="answer-box" style={{ display:'flex', flexDirection:'column', gap:4 }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                    <strong>{r.name}</strong>
+                    <span className="badge">{r.cards.length} cartas</span>
+                  </div>
+                  {r.audio && <span className="caption">Áudio disponível</span>}
+                  <div className="inline" style={{ gap:6, flexWrap:'wrap' }}>
+                    <button className="btn" type="button" onClick={()=> { const id = cloneCloudDeck(r); setExpanded(id); }}>Clonar Local</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
         <section className="card stack" style={{ gap: 12 }}>
           <div className="card-header">Novo Baralho</div>
           <form className="flex-gap" onSubmit={e=>{e.preventDefault(); if(!newDeckName.trim()) return; const id = addDeck(newDeckName.trim(), []); setNewDeckName(''); setExpanded(id);} }>
@@ -732,6 +828,38 @@ export const App: React.FC = () => {
                     {firebaseEnabled && <button className="btn btn-secondary" type="button" onClick={()=> publishDeckFirebase(d)}>{d.cloudId? 'Atualizar Cloud' : 'Publicar Cloud'}</button>}
                     {d.published && <span className="badge">Publicado</span>}
                   </div>
+                  {firebaseEnabled && d.cloudId && (
+                    <div className="inline" style={{ gap:8, flexWrap:'wrap' }}>
+                      <button className="btn btn-ghost" type="button" onClick={async ()=> {
+                        if (!cloudDbRef.current) return alert('Firebase não pronto');
+                        if (!confirm('Remover deck da nuvem? Esta ação não pode ser desfeita.')) return;
+                        appendPublishLog(d.id, 'Removendo deck da nuvem...');
+                        try {
+                          await deleteDeckDoc(cloudDbRef.current, d.cloudId!);
+                          appendPublishLog(d.id, 'Deck removido da nuvem.');
+                          updateDeck(d.id, { cloudId: undefined, published: false });
+                        } catch (err:any) {
+                          console.error('[deleteCloudDeck] erro', err);
+                          appendPublishLog(d.id, 'Erro ao remover deck cloud: ' + (err?.code||err?.message||String(err)));
+                          alert('Falha ao remover deck cloud. Veja console.');
+                        }
+                      }}>Remover Cloud</button>
+                    </div>
+                  )}
+                  {firebaseEnabled && (
+                    <details style={{ background:'#13263b', padding:'8px 10px', borderRadius:6 }}>
+                      <summary style={{ cursor:'pointer', fontSize:12 }}>Log de publicação</summary>
+                      <div style={{ maxHeight:150, overflow:'auto', fontSize:11, marginTop:6, lineHeight:1.3 }}>
+                        {(publishLogs[d.id] && publishLogs[d.id].length) ? publishLogs[d.id].slice(-30).map((l,i)=>(
+                          <div key={i}>{l}</div>
+                        )) : <div style={{ opacity:0.6 }}>Nenhum evento ainda.</div>}
+                      </div>
+                      <div className="inline" style={{ gap:6, marginTop:6 }}>
+                        <button className="btn btn-ghost" type="button" onClick={()=> setPublishLogs(p=> ({ ...p, [d.id]: [] }))} disabled={!publishLogs[d.id] || publishLogs[d.id].length===0}>Limpar log</button>
+                        <button className="btn btn-ghost" type="button" onClick={()=> publishDeckFirebase(d)}>Re-publicar</button>
+                      </div>
+                    </details>
+                  )}
                 </div>
               )}
             </section>
@@ -748,8 +876,8 @@ export const App: React.FC = () => {
     return (
       <>
         <header className="stack" style={{ gap:4 }}>
-          <h1>{firebaseEnabled ? 'Baralhos (Cloud)' : 'Seus Baralhos'}</h1>
-          <div className="subtitle">{firebaseEnabled ? 'Decks publicados disponíveis online' : 'Crie ou ative baralhos para estudar'}</div>
+          <h1>{firebaseEnabled ? (cloudDecks.length ? 'Baralhos (Cloud)' : 'Baralhos (Local - aguardando publish)') : 'Seus Baralhos'}</h1>
+          <div className="subtitle">{firebaseEnabled ? (cloudDecks.length ? 'Decks publicados disponíveis online' : 'Nenhum deck cloud ainda. Publique um baralho para aparecer aqui.') : 'Crie ou ative baralhos para estudar'}</div>
         </header>
         <div className="stack" style={{ gap:16 }}>
           {list.map(d => {
@@ -763,6 +891,7 @@ export const App: React.FC = () => {
                 </div>
                 <div className="caption">Tentativas: {st.attempts} · Acertos: {st.correct} · Taxa: {rate}% · Sessões: {st.sessions}</div>
                 {d.published && <div className="caption" style={{ color:'#7ccfff' }}>Publicado</div>}
+                {!d.published && firebaseEnabled && cloudDecks.length===0 && <div className="caption" style={{ color:'#ffa947' }}>Ainda não publicado</div>}
                 {decks.find(x=> x.id===d.id)?.audio && <DeckAudioInline meta={decks.find(x=> x.id===d.id)!.audio!} />}
                 <div className="actions-row" style={{ marginTop:4 }}>
                   <button className="btn" type="button" onClick={()=> { setCurrentDeckId(d.id); setIndice(0); setView('study'); setRespostaEntrada(''); setOrigemUltimaEntrada(null); setResultado(null); }}>Estudar</button>
@@ -781,6 +910,11 @@ export const App: React.FC = () => {
       {!firebaseEnabled && firebaseStatus==='Config inválida' && (
         <div style={{position:'fixed',top:0,left:0,right:0,background:'#b30000',color:'#fff',padding:'6px 10px',fontSize:12,zIndex:1000}}>
           Cloud desativado: configuração Firebase inválida (anon auth não habilitado ou domínio não autorizado). App segue offline.
+        </div>
+      )}
+      {firebaseEnabled && firebaseStatus && firebaseStatus.startsWith('Erro') && (
+        <div style={{position:'fixed',top:0,left:0,right:0,background:'#b36b00',color:'#fff',padding:'6px 10px',fontSize:12,zIndex:1000}}>
+          {firebaseStatus}
         </div>
       )}
   {/* Remote progress helpers */}
@@ -804,7 +938,6 @@ let remoteSessionIncrement: { deckId:string }[] = [];
 let flushTimer: any = null;
 const flushRemote = async (db:any, userId:string) => {
   if (!remoteQueue.length && !remoteSessionIncrement.length) return;
-  const { updateProgress } = await import('./firebase/progressRepo');
   const grouped: Record<string, {answers:{card:number;score:number;correct:boolean}[]; sessions:number}> = {};
   remoteQueue.forEach(r => { grouped[r.deckId] = grouped[r.deckId] || { answers:[], sessions:0 }; grouped[r.deckId].answers.push(r); });
   remoteSessionIncrement.forEach(r => { grouped[r.deckId] = grouped[r.deckId] || { answers:[], sessions:0 }; grouped[r.deckId].sessions += 1; });

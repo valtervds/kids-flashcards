@@ -1,0 +1,11 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /deck-audio/{deckId}/{fileName} {
+      // Leituras públicas por enquanto (áudio educativo não sensível)
+      allow read: if true;
+      // Upload/alterar apenas usuário autenticado
+      allow write: if request.auth != null;
+    }
+  }
+}
