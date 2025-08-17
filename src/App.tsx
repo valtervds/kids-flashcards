@@ -896,6 +896,7 @@ export const App: React.FC = () => {
           {list.map(d => {
             const st = stats[d.id] || { attempts:0, correct:0, sessions:0 };
             const rate = st.attempts ? Math.round(st.correct/st.attempts*100) : 0;
+            const deckObj = decks.find(x=> x.id===d.id);
             return (
               <div key={d.id} className="card" style={cardStyle}>
                 <div className="card-header inline" style={{ justifyContent:'space-between' }}>
@@ -905,7 +906,12 @@ export const App: React.FC = () => {
                 <div className="caption">Tentativas: {st.attempts} · Acertos: {st.correct} · Taxa: {rate}% · Sessões: {st.sessions}</div>
                 {d.published && <div className="caption" style={{ color:'#7ccfff' }}>Publicado</div>}
                 {!d.published && firebaseEnabled && cloudDecks.length===0 && <div className="caption" style={{ color:'#ffa947' }}>Ainda não publicado</div>}
-                {decks.find(x=> x.id===d.id)?.audio && <DeckAudioInline meta={decks.find(x=> x.id===d.id)!.audio!} />}
+                {deckObj?.audio && <DeckAudioInline meta={deckObj.audio} />}
+                <div className="inline" style={{ gap:6, flexWrap:'wrap' }}>
+                  {deckObj?.video && (
+                    <button className="btn btn-ghost" type="button" aria-label="Ver vídeo" title="Ver vídeo" onClick={()=> setPreviewVideo(deckObj.video!)} style={{ fontSize:18, lineHeight:1 }}>🎬</button>
+                  )}
+                </div>
                 <div className="actions-row" style={{ marginTop:4 }}>
                   <button className="btn" type="button" onClick={()=> { setCurrentDeckId(d.id); setIndice(0); setView('study'); setRespostaEntrada(''); setOrigemUltimaEntrada(null); setMostrarRespostaCorreta(false); setRevelarQtde(0); }}>Estudar</button>
                 </div>
@@ -917,6 +923,9 @@ export const App: React.FC = () => {
       </>
     );
   };
+
+  // Estado para pré-visualização de vídeo
+  const [previewVideo, setPreviewVideo] = useState<DeckVideoMeta|null>(null);
 
   return (
     <div className="app-container">
@@ -941,6 +950,18 @@ export const App: React.FC = () => {
   )}
       {view === 'settings' && <SettingsView />}
       {view === 'decks' && <DecksView />}
+      {previewVideo && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.72)', display:'flex', flexDirection:'column', justifyContent:'center', alignItems:'center', zIndex:3000, padding:20 }} onClick={()=> setPreviewVideo(null)}>
+          <div style={{ background:'#13263b', padding:12, borderRadius:8, maxWidth:'90%', width:800, boxShadow:'0 4px 18px rgba(0,0,0,0.4)' }} onClick={e=> e.stopPropagation()}>
+            <div className="inline" style={{ justifyContent:'space-between', marginBottom:8 }}>
+              <strong style={{ fontSize:14, maxWidth:'70%', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{previewVideo.name}</strong>
+              <button className="btn btn-ghost" type="button" onClick={()=> setPreviewVideo(null)}>Fechar</button>
+            </div>
+            <video controls autoPlay style={{ width:'100%', maxHeight:'70vh', background:'#000' }} poster={previewVideo.posterUrl} src={previewVideo.downloadUrl || previewVideo.remotePath || previewVideo.key} />
+            <div className="caption" style={{ wordBreak:'break-all', marginTop:6 }}>{previewVideo.downloadUrl || previewVideo.remotePath || previewVideo.key}</div>
+          </div>
+        </div>
+      )}
       {firebaseEnabled && firebaseInitDelay && !cloudDbRef.current && (
         <div style={{position:'fixed',bottom:30,left:10,right:10,background:'#2d3f53',padding:'10px 12px',border:'1px solid #44617f',borderRadius:6,fontSize:12,display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
           <span>Firebase ainda não inicializado (possível atraso de rede). Tente novamente.</span>
