@@ -14,6 +14,8 @@ import { useProgress } from './features/study/hooks/useProgress';
 import { useStudySession } from './features/study/hooks/useStudySession';
 import { useStats } from './features/study/hooks/useStats';
 import { useAudioFeedback } from './features/study/hooks/useAudioFeedback';
+import { useAnswerEvaluation } from './features/study/hooks/useAnswerEvaluation';
+import { StudyView as StudyViewExternal } from './features/study/StudyView';
 import { DeckImport } from './components/DeckImport';
 // Imports estáticos para evitar falhas de carregamento dinâmico em GitHub Pages (chunks 404)
 import { createDeck, updateDeckDoc, listenPublishedDecks, deleteDeckDoc } from './firebase/decksRepo';
@@ -155,6 +157,8 @@ export const App: React.FC = () => {
   const [mostrarRespostaCorreta, setMostrarRespostaCorreta] = useState(false);
   const [sonsAtivos, setSonsAtivos] = useState(true);
   const { audioOkRef, audioErroRef, safePlay, audioPronto } = useAudioFeedback(sonsAtivos);
+  // Ref simples para marcar primeira interação de áudio
+  const primeiraInteracaoRef = useRef(false);
   const [inicioPerguntaTs, setInicioPerguntaTs] = useState(Date.now());
   const [ultimoTempoRespostaMs, setUltimoTempoRespostaMs] = useState<number | null>(null);
   // Histórico de pontuações por deck/cartão via hook dedicado
@@ -383,58 +387,30 @@ export const App: React.FC = () => {
 
   // Helpers de dica e resposta correta movidos para utils/scoring
 
-  const submeter = (origem: 'voz' | 'manual') => {
-  const valor = respostaEntrada;
-    if (!valor.trim()) return;
-    let res: any;
-    if (usandoDeckImportado) {
-      const answers = getCurrentDeck()!.cards[indice]?.answers || [];
-      const base = normalizar(valor);
-      const match = answers.find(a => normalizar(a) === base);
-      if (match) res = { correto: true, score: 5, detalhes: 'Correspondência exata', similaridade: 1 };
-      else {
-        const palavrasResp = base.split(' ');
-        let melhor = 0;
-        for (const g of answers) {
-          const gw = normalizar(g).split(' ');
-          const inter = gw.filter(w => palavrasResp.includes(w));
-          const ratio = inter.length / Math.max(gw.length, 1);
-          if (ratio > melhor) melhor = ratio;
-        }
-        let score = 1;
-        if (melhor >= 0.8) score = 4; else if (melhor >= 0.5) score = 3; else if (melhor >= 0.3) score = 2;
-        res = { correto: false, score, detalhes: `Similaridade ${(melhor * 100).toFixed(0)}%`, similaridade: melhor };
-      }
-    } else {
-      res = avaliar(indice, valor);
-    }
-    setResultado(res);
-    setUltimoTempoRespostaMs(Date.now() - inicioPerguntaTs);
-    if (res.correto) safePlay('ok'); else safePlay('erro');
-    // atualizar estatísticas
-  recordAttempt(usandoDeckImportado ? currentDeckId : 'default', res.correto);
-    // registrar progresso por cartão
-  const deckKey = usandoDeckImportado ? currentDeckId : (getCurrentDeck()?.cloudId ? getCurrentDeck()!.id : 'default');
-    setProgress(prev => {
-      const d = prev[deckKey] || {};
-      const arr = d[indice] ? [...d[indice]] : [];
-      arr.push(res.correto ? 5 : res.score);
-      if (arr.length > 50) arr.splice(0, arr.length - 50); // mantém últimos 50
-      return { ...prev, [deckKey]: { ...d, [indice]: arr } };
-    });
-    // Enfileira update remoto (debounce simples)
-    if (firebaseEnabled && getCurrentDeck()?.cloudId && firebaseUid && cloudDbRef.current) {
-      queueRemoteProgressUpdate(getCurrentDeck()!.cloudId!, indice, res.correto ? 5 : res.score, res.correto);
-  scheduleFlush(cloudDbRef.current, firebaseUid);
-    }
-  };
+  // Hook de avaliação extraído (lote 5)
+  const { resultado: resultadoHook, submeter: submeterHook, ultimoTempoRespostaMs: ultimoTempoHook, resetForNextQuestion } = useAnswerEvaluation({
+    getCurrentDeck,
+    usandoDeckImportado,
+    indice,
+    avaliarFallback: (i, v) => avaliar(i, v) as any,
+    safePlay,
+    recordAttempt: (deckId, correto) => recordAttempt(deckId, correto),
+    setProgress,
+    firebaseEnabled,
+    firebaseUid,
+    cloudDbRef,
+    queueRemoteProgressUpdate,
+    scheduleFlush
+  } as any);
+  useEffect(() => { setResultado(resultadoHook as any); setUltimoTempoRespostaMs(ultimoTempoHook); }, [resultadoHook, ultimoTempoHook]);
+  const submeter = (origem: 'voz' | 'manual') => { submeterHook(respostaEntrada); };
 
   const proximaPergunta = () => {
     proximaPerguntaBase();
     setRespostaEntrada(''); setResultado(null); setMostrarRespostaCorreta(false); setOrigemUltimaEntrada(null);
-    setRevelarQtde(0); setUltimoTempoRespostaMs(null); setInicioPerguntaTs(Date.now());
+    setRevelarQtde(0); setUltimoTempoRespostaMs(null); setInicioPerguntaTs(Date.now()); resetForNextQuestion();
     if (perguntas.length && (indice + 1) % perguntas.length === 0) {
-  recordSession(usandoDeckImportado ? currentDeckId : 'default');
+      recordSession(usandoDeckImportado ? currentDeckId : 'default');
       if (firebaseEnabled && getCurrentDeck()?.cloudId && firebaseUid && cloudDbRef.current) {
         queueSessionIncrement(getCurrentDeck()!.cloudId!);
         scheduleFlush(cloudDbRef.current, firebaseUid);
@@ -454,107 +430,46 @@ export const App: React.FC = () => {
     </nav>
   );
 
-  const StudyView = () => {
-    // Guard de carregamento: se selecionado um deck cloud mas primeiro snapshot ainda não chegou
-    if (currentDeckId !== 'default' && !getCurrentDeck() && firebaseEnabled && !cloudDecksLoaded) {
-      return (
-        <section className="card" style={{ padding:20 }}>
-          <h2>Carregando baralho…</h2>
-          <div className="caption">Aguardando dados do servidor.</div>
-        </section>
-      );
-    }
-    if (!perguntas.length) {
-      return (
-        <section className="card" style={{ padding:20 }}>
-          <h2>Nenhuma pergunta</h2>
-          <div className="caption">Este baralho não possui cartas ou falhou ao carregar. Volte e escolha outro.</div>
-        </section>
-      );
-    }
-    return (<>
-      <header className="stack" style={{ gap: 4 }}>
-        <h1>Kids Flashcards</h1>
-        <div className="subtitle">Pratique e aprenda de forma interativa</div>
-      </header>
-      <section className="card stack" style={{ gap: 12 }}>
-        <div className="card-header inline" style={{ justifyContent:'space-between', alignItems:'center', gap:12 }}>
-          <span>Pergunta</span>
-          <MascoteTTS texto={perguntas[indice]} showVoiceSelector={false} />
-        </div>
-        <div className="question-text">{perguntas[indice]}</div>
-        {process.env.NODE_ENV === 'test' && (
-          <button data-testid="simular-voz" className="btn btn-ghost" type="button" onClick={() => { setRespostaEntrada('Brasília'); setOrigemUltimaEntrada('voz'); if(autoAvaliarVoz) submeter('voz'); }}>Simular Voz</button>
-        )}
-        {usandoDeckImportado && (
-          <div className="caption">{getCurrentDeck()!.name} • Cartão {indice + 1}/{perguntas.length}</div>
-        )}
-      </section>
-      <section className="card stack" style={{ gap: 14 }}>
-        <div className="card-header inline" style={{ justifyContent: 'space-between', alignItems:'center', flexWrap:'wrap', gap:12 }}>
-          <span>Resposta</span>
-          <label className="inline" style={{ fontWeight: 400 }}>
-            <input type="checkbox" checked={autoAvaliarVoz} onChange={e => setAutoAvaliarVoz(e.target.checked)} /> <span className="caption">Auto avaliar voz</span>
-          </label>
-        </div>
-        <form className="stack" style={{ gap:8 }} onSubmit={(e)=> { e.preventDefault(); submeter('manual'); }}>
-          <div className="inline" style={{ gap:8, alignItems:'stretch' }}>
-            <input type="text" value={respostaEntrada} onChange={e => { setRespostaEntrada(e.target.value); setOrigemUltimaEntrada('manual'); }} placeholder="Digite ou use o microfone" aria-label="Campo de resposta" style={{ flex:1 }} />
-            <ReconhecimentoVoz onResultado={(texto, final) => { setRespostaEntrada(texto); setOrigemUltimaEntrada('voz'); if (final && autoAvaliarVoz) submeter('voz'); }} />
-            <button className="btn" type="submit">Enviar</button>
-          </div>
-          {origemUltimaEntrada==='voz' && respostaEntrada && !autoAvaliarVoz && (
-            <div className="actions-row">
-              <button className="btn" type="button" onClick={() => submeter('voz')}>Avaliar voz</button>
-            </div>
-          )}
-        </form>
-        <div className="actions-row" style={{ marginTop:4 }}>
-          <button className="btn btn-secondary" type="button" onClick={() => setRevelarQtde(r => r + 1)} disabled={mostrarRespostaCorreta}>Dica</button>
-          <button className="btn btn-ghost" type="button" onClick={() => setMostrarRespostaCorreta(true)} disabled={mostrarRespostaCorreta}>Mostrar resposta</button>
-          <button className="btn" type="button" onClick={proximaPergunta}>Próxima pergunta</button>
-        </div>
-  {revelarQtde > 0 && !mostrarRespostaCorreta && (
-          <div className="hint-box">Dica: {gerarDica({ deck: getCurrentDeck(), respostasCorretas, usandoDeckImportado, indice, qt: revelarQtde, respostaEntrada })}</div>
-        )}
-        {mostrarRespostaCorreta && (
-          <div className="answer-box">Resposta correta: <strong>{obterRespostaCorretaPreferida(getCurrentDeck(), respostasCorretas, usandoDeckImportado, indice)}</strong></div>
-        )}
-      </section>
-      {resultado && (
-        <section className="card stack" style={{ gap: 10 }}>
-          <div className="card-header">Resultado</div>
-          <Stars score={resultado.correto ? 5 : resultado.score} animated />
-          <div className={`result ${resultado.correto ? 'success' : 'error'}`}>
-            {resultado.correto ? '✅ Correto! 5/5 estrelas.' : `❌ Ainda não. Score: ${resultado.score}/5 (${resultado.detalhes}).`}
-          </div>
-          <div className="caption">
-            {ultimoTempoRespostaMs != null && <>Tempo: {ultimoTempoRespostaMs} ms | </>}Pergunta {indice + 1}/{perguntas.length}
-          </div>
-          <div className="actions-row" style={{ justifyContent:'flex-start' }}>
-            <button className="btn btn-secondary" type="button" onClick={()=> setMostrarHistorico(m => !m)}>{mostrarHistorico ? 'Ocultar histórico' : 'Histórico'}</button>
-          </div>
-          {mostrarHistorico && (() => {
-            const deckKey = usandoDeckImportado ? currentDeckId : (getCurrentDeck()?.cloudId ? getCurrentDeck()!.id : 'default');
-            const arr = (progress[deckKey]?.[indice]) || [];
-            const media = arr.length ? (arr.reduce((a,b)=>a+b,0)/arr.length).toFixed(2) : '-';
-            return (
-              <div className="answer-box" style={{ maxHeight:140, overflow:'auto', fontSize:12 }}>
-                <strong>Histórico ({arr.length})</strong><br/>
-                Média: {media} • Últimos: {arr.slice(-10).join(', ') || '—'}
-              </div>
-            );
-          })()}
-          {/* Helper removido: dica só aparece quando usuário clica */}
-        </section>
-      )}
-      {!resultado && (
-        <div className="inline" style={{ justifyContent: 'flex-end' }}>
-          <button className="btn" type="button" onClick={proximaPergunta}>Próxima pergunta</button>
-        </div>
-      )}
-    </>
-  ); };
+  // StudyView agora componente externo (lote 5). Mantemos lógica de voz e formulário aqui e passamos via props customizadas.
+  const deckKeyForHistory = usandoDeckImportado ? currentDeckId : (getCurrentDeck()?.cloudId ? getCurrentDeck()!.id : 'default');
+  const obterRespostaCorreta = (i:number) => obterRespostaCorretaPreferida(getCurrentDeck(), respostasCorretas, usandoDeckImportado, i);
+  const gerarDicaComputed = (i:number) => gerarDica({ deck: getCurrentDeck(), respostasCorretas, usandoDeckImportado, indice: i, qt: revelarQtde, respostaEntrada });
+
+  const StudyView = () => (
+    <StudyViewExternal
+      perguntas={perguntas}
+      indice={indice}
+      setIndice={setIndice}
+      respostaEntrada={respostaEntrada}
+      setRespostaEntrada={setRespostaEntrada}
+      origemUltimaEntrada={origemUltimaEntrada}
+      setOrigemUltimaEntrada={setOrigemUltimaEntrada}
+      autoAvaliarVoz={autoAvaliarVoz}
+      setAutoAvaliarVoz={setAutoAvaliarVoz}
+      revelarQtde={revelarQtde}
+      setRevelarQtde={setRevelarQtde}
+      mostrarRespostaCorreta={mostrarRespostaCorreta}
+      setMostrarRespostaCorreta={setMostrarRespostaCorreta}
+      submeter={() => submeter('manual')}
+      proximaPergunta={proximaPergunta}
+      gerarAudioTTS={<MascoteTTS texto={perguntas[indice]} showVoiceSelector={false} />}
+      usandoDeckImportado={usandoDeckImportado}
+      getCurrentDeck={getCurrentDeck}
+      resultado={resultado as any}
+      mostrarHistorico={mostrarHistorico}
+      setMostrarHistorico={setMostrarHistorico as any}
+      progress={progress}
+      currentDeckId={currentDeckId}
+      respostasCorretas={respostasCorretas}
+      deckKeyForHistory={deckKeyForHistory}
+      obterRespostaCorreta={obterRespostaCorreta}
+      gerarDicaComputed={gerarDicaComputed}
+      loadingDeck={currentDeckId !== 'default' && !getCurrentDeck() && firebaseEnabled && !cloudDecksLoaded}
+  ultimoTempoRespostaMs={ultimoTempoRespostaMs}
+  onSimularVoz={(texto) => { setRespostaEntrada(texto); setOrigemUltimaEntrada('voz'); if(autoAvaliarVoz) submeter('voz'); }}
+  ReconhecimentoVozSlot={<ReconhecimentoVoz onResultado={(texto, final) => { setRespostaEntrada(texto); setOrigemUltimaEntrada('voz'); if (final && autoAvaliarVoz) submeter('voz'); }} />}
+    />
+  );
 
   const SettingsView = () => (
     <>
@@ -567,7 +482,7 @@ export const App: React.FC = () => {
         <label className="inline" style={{ fontSize: 14 }}>
           <input type="checkbox" checked={sonsAtivos} onChange={e => setSonsAtivos(e.target.checked)} /> Som ativo
         </label>
-        <button className="btn btn-secondary" type="button" style={{ maxWidth: 140 }} onClick={() => { interagiuRef.current = true; safePlay('ok'); }}>Testar som</button>
+  <button className="btn btn-secondary" type="button" style={{ maxWidth: 140 }} onClick={() => { primeiraInteracaoRef.current = true; safePlay('ok'); }}>Testar som</button>
         {!audioPronto && sonsAtivos && <span className="caption">Toque "Testar som" após interação se não ouvir.</span>}
         <MascoteTTS texto="Exemplo de voz para teste." showVoiceSelector />
       </section>

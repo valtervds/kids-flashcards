@@ -1,6 +1,8 @@
 import React from 'react';
 import { gerarDica, obterRespostaCorretaPreferida } from '../../utils/scoring';
 import { Deck } from '../../domain/models';
+import { Stars } from '../../components/Stars';
+import { MascoteTTS } from '../../components/MascoteTTS';
 
 interface Props {
   perguntas: string[];
@@ -31,6 +33,11 @@ interface Props {
   obterRespostaCorreta: (indice:number)=>string;
   gerarDicaComputed: (indice:number)=>string;
   loadingDeck: boolean;
+  ultimoTempoRespostaMs?: number | null;
+  onSimularVoz?: (texto:string)=>void;
+  onSubmeterManual?: ()=>void;
+  onRespostaVoz?: (texto:string, final:boolean)=>void;
+  ReconhecimentoVozSlot?: React.ReactNode; // permite injeção futura
 }
 
 export const StudyView: React.FC<Props> = (props) => {
@@ -38,7 +45,8 @@ export const StudyView: React.FC<Props> = (props) => {
     perguntas, indice, respostaEntrada, setRespostaEntrada, origemUltimaEntrada, setOrigemUltimaEntrada,
     autoAvaliarVoz, setAutoAvaliarVoz, revelarQtde, setRevelarQtde, mostrarRespostaCorreta,
     setMostrarRespostaCorreta, submeter, proximaPergunta, gerarAudioTTS, usandoDeckImportado, getCurrentDeck,
-    resultado, mostrarHistorico, setMostrarHistorico, progress, deckKeyForHistory, obterRespostaCorreta, gerarDicaComputed, loadingDeck
+    resultado, mostrarHistorico, setMostrarHistorico, progress, deckKeyForHistory, obterRespostaCorreta, gerarDicaComputed, loadingDeck,
+    ultimoTempoRespostaMs, onSimularVoz, onSubmeterManual, ReconhecimentoVozSlot
   } = props;
 
   if (loadingDeck) {
@@ -56,9 +64,12 @@ export const StudyView: React.FC<Props> = (props) => {
       <section className="card stack" style={{ gap: 12 }}>
         <div className="card-header inline" style={{ justifyContent:'space-between', alignItems:'center', gap:12 }}>
           <span>Pergunta</span>
-          {gerarAudioTTS}
+          {gerarAudioTTS || <MascoteTTS texto={perguntas[indice]} showVoiceSelector={false} />}
         </div>
         <div className="question-text">{perguntas[indice]}</div>
+        {process.env.NODE_ENV === 'test' && onSimularVoz && (
+          <button data-testid="simular-voz" className="btn btn-ghost" type="button" onClick={() => onSimularVoz('Brasília')}>Simular Voz</button>
+        )}
         {usandoDeckImportado && (
           <div className="caption">{getCurrentDeck()!.name} • Cartão {indice + 1}/{perguntas.length}</div>
         )}
@@ -70,13 +81,59 @@ export const StudyView: React.FC<Props> = (props) => {
             <input type="checkbox" checked={autoAvaliarVoz} onChange={e => setAutoAvaliarVoz(e.target.checked)} /> <span className="caption">Auto avaliar voz</span>
           </label>
         </div>
-        {/* Campo resposta e ações de voz serão injetados externamente em refactor futuro */}
+        <form className="stack" style={{ gap:8 }} onSubmit={(e)=> { e.preventDefault(); onSubmeterManual ? onSubmeterManual() : submeter('manual'); }}>
+          <div className="inline" style={{ gap:8, alignItems:'stretch' }}>
+            <input type="text" value={respostaEntrada} onChange={e => { setRespostaEntrada(e.target.value); setOrigemUltimaEntrada('manual'); }} placeholder="Digite ou use o microfone" aria-label="Campo de resposta" style={{ flex:1 }} />
+            {ReconhecimentoVozSlot}
+            <button className="btn" type="submit">Enviar</button>
+          </div>
+          {origemUltimaEntrada==='voz' && respostaEntrada && !autoAvaliarVoz && (
+            <div className="actions-row">
+              <button className="btn" type="button" onClick={() => submeter('voz')}>Avaliar voz</button>
+            </div>
+          )}
+        </form>
+        <div className="actions-row" style={{ marginTop:4 }}>
+          <button className="btn btn-secondary" type="button" onClick={() => setRevelarQtde(r => r + 1)} disabled={mostrarRespostaCorreta}>Dica</button>
+          <button className="btn btn-ghost" type="button" onClick={() => setMostrarRespostaCorreta(true)} disabled={mostrarRespostaCorreta}>Mostrar resposta</button>
+          <button className="btn" type="button" onClick={proximaPergunta}>Próxima pergunta</button>
+        </div>
+        {revelarQtde > 0 && !mostrarRespostaCorreta && (
+          <div className="hint-box">Dica: {gerarDicaComputed(indice)}</div>
+        )}
+        {mostrarRespostaCorreta && (
+          <div className="answer-box">Resposta correta: <strong>{obterRespostaCorreta(indice)}</strong></div>
+        )}
       </section>
       {resultado && (
         <section className="card stack" style={{ gap: 10 }}>
           <div className="card-header">Resultado</div>
-          <div className="caption">Pergunta {indice + 1}/{perguntas.length}</div>
+          <Stars score={resultado.correto ? 5 : resultado.score} animated />
+          <div className={`result ${resultado.correto ? 'success' : 'error'}`}>
+            {resultado.correto ? '✅ Correto! 5/5 estrelas.' : `❌ Ainda não. Score: ${resultado.score}/5 (${resultado.detalhes}).`}
+          </div>
+          <div className="caption">
+            {ultimoTempoRespostaMs != null && <>Tempo: {ultimoTempoRespostaMs} ms | </>}Pergunta {indice + 1}/{perguntas.length}
+          </div>
+          <div className="actions-row" style={{ justifyContent:'flex-start' }}>
+            <button className="btn btn-secondary" type="button" onClick={()=> setMostrarHistorico(m => !(typeof m==='boolean'? m : false))}>{mostrarHistorico ? 'Ocultar histórico' : 'Histórico'}</button>
+          </div>
+          {mostrarHistorico && (() => {
+            const arr = (progress[deckKeyForHistory]?.[indice]) || [];
+            const media = arr.length ? (arr.reduce((a,b)=>a+b,0)/arr.length).toFixed(2) : '-';
+            return (
+              <div className="answer-box" style={{ maxHeight:140, overflow:'auto', fontSize:12 }}>
+                <strong>Histórico ({arr.length})</strong><br/>
+                Média: {media} • Últimos: {arr.slice(-10).join(', ') || '—'}
+              </div>
+            );
+          })()}
         </section>
+      )}
+      {!resultado && (
+        <div className="inline" style={{ justifyContent: 'flex-end' }}>
+          <button className="btn" type="button" onClick={proximaPergunta}>Próxima pergunta</button>
+        </div>
       )}
     </>
   );
