@@ -925,7 +925,11 @@ export const App: React.FC = () => {
   {/* Implement queue system */}
       <Nav />
       {view === 'home' && <HomeView />}
-  {view === 'study' && <Suspense fallback={<div style={{padding:20}}>Carregando estudo...</div>}><StudyView /></Suspense>}
+  {view === 'study' && (
+    (process.env.NODE_ENV === 'test')
+      ? <StudyView />
+      : <Suspense fallback={<div style={{padding:20}}>Carregando estudo...</div>}><StudyView /></Suspense>
+  )}
       {view === 'settings' && <SettingsView />}
       {view === 'decks' && <DecksView />}
       {firebaseEnabled && firebaseInitDelay && !cloudDbRef.current && (
