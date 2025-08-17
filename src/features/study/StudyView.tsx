@@ -32,6 +32,7 @@ interface Props {
   deckKeyForHistory: string;
   obterRespostaCorreta: (indice:number)=>string;
   gerarDicaComputed: (indice:number)=>string;
+  obterRespostasTodas?: (indice:number)=>string[];
   loadingDeck: boolean;
   ultimoTempoRespostaMs?: number | null;
   onSimularVoz?: (texto:string)=>void;
@@ -45,7 +46,8 @@ export const StudyView: React.FC<Props> = (props) => {
     perguntas, indice, respostaEntrada, setRespostaEntrada, origemUltimaEntrada, setOrigemUltimaEntrada,
     autoAvaliarVoz, setAutoAvaliarVoz, revelarQtde, setRevelarQtde, mostrarRespostaCorreta,
     setMostrarRespostaCorreta, submeter, proximaPergunta, gerarAudioTTS, usandoDeckImportado, getCurrentDeck,
-    resultado, mostrarHistorico, setMostrarHistorico, progress, deckKeyForHistory, obterRespostaCorreta, gerarDicaComputed, loadingDeck,
+  resultado, mostrarHistorico, setMostrarHistorico, progress, deckKeyForHistory, obterRespostaCorreta, gerarDicaComputed, loadingDeck,
+  obterRespostasTodas,
     ultimoTempoRespostaMs, onSimularVoz, onSubmeterManual, ReconhecimentoVozSlot
   } = props;
 
@@ -102,7 +104,14 @@ export const StudyView: React.FC<Props> = (props) => {
           <div className="hint-box">Dica: {gerarDicaComputed(indice)}</div>
         )}
         {mostrarRespostaCorreta && (
-          <div className="answer-box">Resposta correta: <strong>{obterRespostaCorreta(indice)}</strong></div>
+          <div className="answer-box">
+            Resposta correta: <strong>{obterRespostaCorreta(indice)}</strong>
+            {obterRespostasTodas && (() => {
+              const todas = obterRespostasTodas(indice) || [];
+              if (todas.length <= 1) return null;
+              return <div style={{ marginTop:6, fontSize:12 }}>Todas as respostas aceitas: {todas.join(', ')}</div>;
+            })()}
+          </div>
         )}
       </section>
       {resultado && (

@@ -94,6 +94,13 @@ export function useStudyEngine(p: Params) {
 
   const deckKeyForHistory = usandoDeckImportado ? (getCurrentDeck()?.id || 'default') : (getCurrentDeck()?.cloudId ? getCurrentDeck()!.id : 'default');
   const obterRespostaCorreta = (i:number) => obterRespostaCorretaPreferida(getCurrentDeck(), respostasCorretas, usandoDeckImportado, i);
+  const obterRespostasTodas = (i:number) => {
+    const deck = getCurrentDeck();
+    if (usandoDeckImportado) {
+      return deck?.cards[i]?.answers || [];
+    }
+    return respostasCorretas[i] || [];
+  };
   const gerarDicaComputed = (i:number) => gerarDica({ deck: getCurrentDeck(), respostasCorretas, usandoDeckImportado, indice: i, qt: revelarQtde, respostaEntrada });
 
   return {
@@ -111,6 +118,7 @@ export function useStudyEngine(p: Params) {
     proximaPergunta,
     deckKeyForHistory,
     obterRespostaCorreta,
+  obterRespostasTodas,
     gerarDicaComputed,
     startTime: inicioPerguntaTs
   };

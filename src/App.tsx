@@ -106,8 +106,33 @@ export const App: React.FC = () => {
   const deleteAudioBlob = async (key: string) => { const db = await openAudioDb(); if (!db) return; const tx = db.transaction('audios','readwrite'); tx.objectStore('audios').delete(key); };
   const audioUrlCache = useRef<Record<string,string>>({});
   const getAudioObjectUrl = async (meta?: DeckAudioMeta) => {
-    if (!meta) return undefined; if (audioUrlCache.current[meta.key]) return audioUrlCache.current[meta.key];
-    const blob = await loadAudioBlob(meta.key); if (!blob) return undefined; const url = URL.createObjectURL(blob); audioUrlCache.current[meta.key] = url; return url;
+    if (!meta) return undefined;
+    // cache hit
+    if (audioUrlCache.current[meta.key]) return audioUrlCache.current[meta.key];
+    // tenta IndexedDB
+    let blob = await loadAudioBlob(meta.key);
+    // Se não existir local e parece ser caminho remoto, tenta Firebase Storage
+    if (!blob && firebaseEnabled && cloudStorageRef.current && (meta.remotePath || meta.key.startsWith('deck-audio/'))) {
+      const remotePath = meta.remotePath || meta.key;
+      try {
+        const { getDownloadURL, ref } = await import('firebase/storage');
+        const r = ref(cloudStorageRef.current, remotePath);
+        const urlRemote = await getDownloadURL(r);
+        // baixa blob
+        const resp = await fetch(urlRemote);
+        if (resp.ok) {
+          blob = await resp.blob();
+          // persiste em IndexedDB para uso offline (usa key = remotePath)
+            await saveAudioBlob(remotePath, blob);
+        }
+      } catch (e) {
+        console.warn('[getAudioObjectUrl] falha download remoto', remotePath, e);
+      }
+    }
+    if (!blob) return undefined;
+    const url = URL.createObjectURL(blob);
+    audioUrlCache.current[meta.key] = url;
+    return url;
   };
 
   const DeckAudioPlayer: React.FC<{ meta: DeckAudioMeta; onRemove: () => void }> = ({ meta, onRemove }) => {
@@ -162,6 +187,7 @@ export const App: React.FC = () => {
   };
   const usandoDeckImportado = !!getCurrentDeck();
   const perguntas = getCurrentDeck() ? getCurrentDeck()!.cards.map(c => c.question) : defaultPerguntas; // kept for backward compatibility (engine also derives)
+  // Áudio do baralho agora exibido somente na Home (player removido do modo Estudar)
 
   // Estados principais
   const [view, setView] = useState<'home' | 'study' | 'settings' | 'decks'>(() => process.env.NODE_ENV === 'test' ? 'study' : 'home');
@@ -260,7 +286,7 @@ export const App: React.FC = () => {
       }
       listenPublishedDecks(db, (list: any[]) => {
         console.log('[firebase:listener] published decks snapshot', list.length);
-        const mapped: Deck[] = list.map((d: any) => ({ id: d.id, name: d.name, active: true, createdAt: Date.now(), cards: d.cards || [], published: d.published, cloudId: d.id, audio: d.audioMeta ? { name: d.audioMeta.fileName, size: d.audioMeta.size||0, type: d.audioMeta.contentType||'audio/mpeg', key: d.audioMeta.storagePath } : undefined }));
+  const mapped: Deck[] = list.map((d: any) => ({ id: d.id, name: d.name, active: true, createdAt: Date.now(), cards: d.cards || [], published: d.published, cloudId: d.id, audio: d.audioMeta ? { name: d.audioMeta.fileName, size: d.audioMeta.size||0, type: d.audioMeta.contentType||'audio/mpeg', key: d.audioMeta.storagePath, remotePath: d.audioMeta.storagePath } : undefined }));
         cloudStateRef.current.decks = mapped;
         cloudStateRef.current.loaded = true;
         setCloudTick(t=>t+1);
@@ -440,7 +466,8 @@ export const App: React.FC = () => {
     submeter, proximaPergunta,
     deckKeyForHistory,
     obterRespostaCorreta,
-    gerarDicaComputed
+  gerarDicaComputed,
+  obterRespostasTodas
   } = engine as any;
 
   // Auto-avaliar quando chegar voz
@@ -489,6 +516,7 @@ export const App: React.FC = () => {
       deckKeyForHistory={deckKeyForHistory}
       obterRespostaCorreta={obterRespostaCorreta}
       gerarDicaComputed={gerarDicaComputed}
+  obterRespostasTodas={obterRespostasTodas}
   loadingDeck={false}
   ultimoTempoRespostaMs={ultimoTempoRespostaMs}
   onSimularVoz={(texto) => { setRespostaEntrada(texto); setOrigemUltimaEntrada('voz'); if(autoAvaliarVoz) submeter('voz'); }}
