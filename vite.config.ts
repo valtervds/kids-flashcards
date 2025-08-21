@@ -3,11 +3,9 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig(({ mode }) => ({
   plugins: [react()],
-  root: './src',
   base: '/kids-flashcards/',
-  publicDir: '../public',
   build: {
-    outDir: '../dist',
+    outDir: './dist',
     emptyOutDir: true,
   // Gera sourcemaps em produção para facilitar depuração de erros apenas quando explicitamente habilitado
   sourcemap: true,

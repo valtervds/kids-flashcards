@@ -15,6 +15,18 @@ import { useStats } from './features/study/hooks/useStats';
 import { useAudioFeedback } from './features/study/hooks/useAudioFeedback';
 import { useAnswerEvaluation } from './features/study/hooks/useAnswerEvaluation'; // still used inside engine
 import { useStudyEngine } from './features/study/hooks/useStudyEngine';
+import { ToastProvider, ToastContainer, useToast } from './components/ui/Toast';
+import { usePublishService } from './services/publish';
+import { DeckProvider, useDeckContext } from './contexts/DeckContext';
+import { CloudProvider, useCloudContext } from './contexts/CloudContext';
+import { HomeView, SettingsView, DecksView } from './components/views';
+import { Nav } from './components/Nav';
+import { useAudioStorage } from './services/media/audioStorage';
+import { DeckAudioPlayer, DeckAudioInline } from './components/media/DeckAudio';
+import { DeckVideoPlayer, ManualRemoteVideoInput } from './components/media/DeckVideo';
+import { ManualRemoteAudioInput } from './components/media/ManualRemoteAudioInput';
+import { SpeechRecognition } from './components/input/SpeechRecognition';
+import { useFirebaseConfig, useFirebaseState, firebaseUtils } from './services/firebase/firebaseUtils';
 // Code-splitting StudyView (carrega imediatamente em ambiente de teste para simplificar testes)
 let StudyView: React.ComponentType<any>;
 if (process.env.NODE_ENV === 'test') {
@@ -31,60 +43,9 @@ import { uploadDeckAudio } from './firebase/storage';
 import { listenProgress, updateProgress } from './firebase/progressRepo';
 import { createDeckMedia } from './firebase/deckMediaRepo';
 
-// Declaração global para suportar webkitSpeechRecognition
-declare global { interface Window { webkitSpeechRecognition?: any; SpeechRecognition?: any; } }
-
-// -------------------------- Reconhecimento de Voz --------------------------
-interface ReconhecimentoProps { onResultado: (texto: string, final: boolean) => void; }
-const ReconhecimentoVoz: React.FC<ReconhecimentoProps> = ({ onResultado }) => {
-  const [suporte, setSuporte] = useState(() => typeof window !== 'undefined' && (!!(window as any).SpeechRecognition || !!window.webkitSpeechRecognition));
-  const [gravando, setGravando] = useState(false);
-  const [transcricao, setTranscricao] = useState('');
-  const [erro, setErro] = useState<string | null>(null);
-  const instanciaRef = useRef<any | null>(null);
-
-  const iniciar = () => {
-    if (!suporte || gravando) return;
-    setErro(null); setTranscricao('');
-    const SR: any = (window as any).SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { setSuporte(false); return; }
-    const rec = new SR();
-    instanciaRef.current = rec;
-    rec.lang = 'pt-BR'; rec.continuous = false; rec.interimResults = true; rec.maxAlternatives = 1;
-    let finalConcat = '';
-    rec.onstart = () => setGravando(true);
-    rec.onerror = (e: any) => { console.warn('[ASR] erro', e.error); setErro(e.error); };
-    rec.onresult = (e: any) => {
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const r = e.results[i];
-        if (r.isFinal) {
-          finalConcat += r[0].transcript;
-          onResultado((finalConcat).trim(), false);
-        } else {
-          const parcial = (finalConcat + r[0].transcript).trim();
-          setTranscricao(parcial);
-          onResultado(parcial, false);
-        }
-      }
-      if (finalConcat) setTranscricao(finalConcat.trim());
-    };
-    rec.onend = () => { setGravando(false); const saida = (finalConcat || transcricao).trim(); if (saida) onResultado(saida, true); };
-    try { rec.start(); } catch (e) { console.error(e); }
-  };
-  const parar = () => { try { instanciaRef.current?.stop(); } catch { /* noop */ } };
-
-  return (
-    <div className="inline" style={{ gap: 8 }}>
-      <button className="btn" type="button" onClick={iniciar} disabled={!suporte || gravando}>{gravando ? '🎙 Gravando…' : 'Falar 🎤'}</button>
-      {gravando && <button className="btn btn-secondary" type="button" onClick={parar}>Parar</button>}
-      {!suporte && <span style={{ color: 'var(--color-danger)', fontSize: 12 }}>Sem suporte</span>}
-      {erro && <span style={{ color: 'var(--color-danger)', fontSize: 12 }}>Erro: {erro}</span>}
-    </div>
-  );
-};
-
 // ------------------------------- App Principal -----------------------------
-export const App: React.FC = () => {
+const AppContent: React.FC = () => {
+  const { showToast } = useToast();
   const defaultPerguntas = process.env.NODE_ENV === 'test' ? [
     'Qual é a capital do Brasil?',
     'Quanto é 3 + 4?',
@@ -93,113 +54,9 @@ export const App: React.FC = () => {
 
   // Estrutura multi-deck (tipos movidos para domain/models)
 
-  // ---------------- Audio Storage (IndexedDB) ----------------
-  const openAudioDb = () => new Promise<IDBDatabase | null>((resolve) => {
-    if (!('indexedDB' in window)) return resolve(null);
-    const req = indexedDB.open('deck-audio-db', 1);
-    req.onupgradeneeded = () => { const db = req.result; if (!db.objectStoreNames.contains('audios')) db.createObjectStore('audios'); };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => resolve(null);
-  });
-  const saveAudioBlob = async (key: string, blob: Blob) => {
-    const db = await openAudioDb(); if (!db) return false;
-    return new Promise<boolean>((res)=> { const tx = db.transaction('audios','readwrite'); tx.objectStore('audios').put(blob, key); tx.oncomplete=()=>res(true); tx.onerror=()=>res(false); });
-  };
-  const loadAudioBlob = async (key: string): Promise<Blob | null> => {
-    const db = await openAudioDb(); if (!db) return null;
-    return new Promise((res)=> { const tx = db.transaction('audios','readonly'); const r = tx.objectStore('audios').get(key); r.onsuccess=()=> res(r.result || null); r.onerror=()=> res(null); });
-  };
-  const deleteAudioBlob = async (key: string) => { const db = await openAudioDb(); if (!db) return; const tx = db.transaction('audios','readwrite'); tx.objectStore('audios').delete(key); };
-  const audioUrlCache = useRef<Record<string,string>>({});
-  const getAudioObjectUrl = async (meta?: DeckAudioMeta) => {
-    if (!meta) return undefined;
-    // cache hit
-    if (audioUrlCache.current[meta.key]) return audioUrlCache.current[meta.key];
-    // tenta IndexedDB
-    let blob = await loadAudioBlob(meta.key);
-    // Caso usuário tenha configurado manualmente uma URL direta (downloadUrl ou key http)
-    if (!blob && (meta.downloadUrl || meta.key.startsWith('http'))) {
-      const direct = meta.downloadUrl || meta.key;
-      // Podemos simplesmente retornar a URL remota (sem offline). Para offline poderíamos baixar e cachear.
-      try {
-        const resp = await fetch(direct, { method: 'GET' });
-        if (resp.ok && resp.headers.get('content-type')?.startsWith('audio')) {
-          const fetched = await resp.blob();
-          // Salva offline usando key = meta.key (para não conflitar com storage path)
-          await saveAudioBlob(meta.key, fetched);
-          blob = fetched; // cria object URL abaixo
-        } else {
-          // Se não conseguimos baixar (CORS ou 403), ainda assim usar o link direto sem caching
-          audioUrlCache.current[meta.key] = direct;
-          return direct;
-        }
-      } catch {
-        audioUrlCache.current[meta.key] = direct;
-        return direct;
-      }
-    }
-    // Se não existir local e parece ser caminho remoto, tenta Firebase Storage
-    if (!blob && firebaseEnabled && cloudStorageRef.current && (meta.remotePath || meta.key.startsWith('deck-audio/'))) {
-      const remotePath = meta.remotePath || meta.key;
-      try {
-        const { getDownloadURL, ref } = await import('firebase/storage');
-        const r = ref(cloudStorageRef.current, remotePath);
-        const urlRemote = await getDownloadURL(r);
-        // baixa blob
-        const resp = await fetch(urlRemote);
-        if (resp.ok) {
-          blob = await resp.blob();
-          // persiste em IndexedDB para uso offline (usa key = remotePath)
-            await saveAudioBlob(remotePath, blob);
-        }
-      } catch (e) {
-        console.warn('[getAudioObjectUrl] falha download remoto', remotePath, e);
-      }
-    }
-    if (!blob) return undefined;
-    const url = URL.createObjectURL(blob);
-    audioUrlCache.current[meta.key] = url;
-    return url;
-  };
+  // Use audio storage hook
+  const { saveAudioBlob, loadAudioBlob, deleteAudioBlob, getAudioObjectUrl, clearAudioCache } = useAudioStorage();
 
-  const DeckAudioPlayer: React.FC<{ meta: DeckAudioMeta; onRemove: () => void }> = ({ meta, onRemove }) => {
-    const ref = useRef<HTMLAudioElement | null>(null);
-    const [url, setUrl] = useState<string | undefined>(undefined);
-    useEffect(()=> { let alive = true; getAudioObjectUrl(meta).then(u=> { if(alive) setUrl(u); }); return ()=> { alive=false; }; }, [meta.key]);
-    return (
-      <div className="stack" style={{ gap:4 }}>
-        <div className="inline" style={{ justifyContent:'space-between' }}>
-          <span className="caption">{meta.name} ({(meta.size/1024).toFixed(0)} KB)</span>
-          <button className="btn btn-ghost" type="button" onClick={onRemove}>Remover áudio</button>
-        </div>
-        {url ? <audio ref={ref} controls preload="metadata" src={url} style={{ width:'100%' }} /> : <div className="caption">Carregando áudio…</div>}
-      </div>
-    );
-  };
-
-  const DeckAudioInline: React.FC<{ meta: DeckAudioMeta }> = ({ meta }) => {
-    const [url, setUrl] = useState<string | undefined>(undefined);
-    const [erro, setErro] = useState<string | null>(null);
-    const [tentando, setTentando] = useState(false);
-    const carregar = useCallback(async () => {
-      setTentando(true); setErro(null);
-      try {
-        const u = await getAudioObjectUrl(meta);
-        if (!u) setErro('Não foi possível carregar o áudio');
-        setUrl(u);
-      } catch (e:any) {
-        console.warn('[DeckAudioInline] falha', e);
-        setErro(e?.message || 'Falha ao carregar áudio');
-      } finally { setTentando(false); }
-    }, [meta.key]);
-    useEffect(()=> { let alive=true; carregar(); return ()=> { alive=false; }; }, [carregar]);
-    if (erro) return <div className="caption" style={{ display:'flex', flexDirection:'column', gap:4 }}>
-      <span>Áudio: {erro}</span>
-      <button className="btn btn-ghost" type="button" disabled={tentando} onClick={carregar}>{tentando? 'Tentando...' : 'Tentar novamente'}</button>
-    </div>;
-    if (!url) return <div className="caption">Carregando áudio...</div>;
-    return <audio controls preload="metadata" src={url} style={{ width:'100%' }} />;
-  };
   // DeckStats movido para domain/models
 
   // Decks locais via hook
@@ -247,29 +104,21 @@ export const App: React.FC = () => {
   // --------- Cloud Sync State ---------
   // Cloud sync legado removido
 
-  // --------- Firebase Cloud (publicação decks) ---------
-  const safeEnv = (k: string) => {
-    const winAny: any = (typeof window !== 'undefined') ? window : {};
-    const vite = winAny.__VITE_ENV__ || {}; // possibilidade de injetar manualmente em index.html se quiser
-    const proc: any = (typeof process !== 'undefined') ? process : {};
-    return vite[k] || proc.env?.[k] || undefined;
-  };
-  const firebaseEnv = resolveFirebaseConfig();
-  const firebaseAvailable = !!firebaseEnv.apiKey && process.env.NODE_ENV !== 'test';
-  // Firebase habilitado internamente; se falhar configuração de Auth desabilitamos em runtime
-  const [firebaseEnabled, setFirebaseEnabled] = useState(process.env.NODE_ENV !== 'test');
-  // Expor config para debug (somente leitura)
-  if (typeof window !== 'undefined') {
-    (window as any).__FB_CFG = firebaseEnv;
-  }
-  const [firebaseStatus, setFirebaseStatus] = useState('');
-  const [firebaseUid, setFirebaseUid] = useState<string | null>(null);
-  const cloudDbRef = useRef<any>(null);
-  const cloudStorageRef = useRef<any>(null);
-  // Marca quando recebemos o primeiro snapshot (evita race de estudo antes de carregar)
-  // (migrado para cima para evitar uso antes da inicialização)
-  // Hook de fila remota (lote 6) - precisa vir antes dos efeitos que o utilizam
-  // Hook de fila remota (lote 6) - precisa vir antes dos efeitos que o utilizam
+  // Firebase configuration and state
+  const { firebaseEnv, firebaseAvailable } = useFirebaseConfig();
+  const {
+    firebaseEnabled,
+    setFirebaseEnabled,
+    firebaseStatus,
+    setFirebaseStatus,
+    firebaseUid,
+    setFirebaseUid,
+    firebaseInitDelay,
+    setFirebaseInitDelay,
+    cloudDbRef,
+    cloudStorageRef,
+    forceFirebaseInit
+  } = useFirebaseState();
   const remoteQueueApi = useRemoteProgressQueue({ enabled: firebaseEnabled, dbRef: cloudDbRef, userId: firebaseUid });
   // Debug: loga uma única vez para detectar possíveis problemas de ordem em build minificado
   const loggedRemoteQueueRef = useRef(false);
@@ -330,7 +179,7 @@ export const App: React.FC = () => {
       }
       listenPublishedDecks(db, (list: any[]) => {
         console.log('[firebase:listener] published decks snapshot', list.length);
-  const mapped: Deck[] = list.map((d: any) => ({ id: d.id, name: d.name, active: true, createdAt: Date.now(), cards: d.cards || [], published: d.published, cloudId: d.id, audio: d.audioMeta ? { name: d.audioMeta.fileName, size: d.audioMeta.size||0, type: d.audioMeta.contentType||'audio/mpeg', key: d.audioMeta.storagePath, remotePath: d.audioMeta.storagePath } : undefined }));
+  const mapped = firebaseUtils.mapCloudDecksToLocal(list);
         cloudStateRef.current.decks = mapped;
         cloudStateRef.current.loaded = true;
         setCloudTick(t=>t+1);
@@ -353,17 +202,18 @@ export const App: React.FC = () => {
     }
   };
   useEffect(()=> { initFirebaseFull(); }, []);
+  
   // Aviso se demorar para inicializar
-  const [firebaseInitDelay, setFirebaseInitDelay] = useState(false);
   useEffect(()=> {
     const t = setTimeout(()=> {
       if (firebaseEnabled && !cloudDbRef.current) setFirebaseInitDelay(true);
     }, 5000);
     return ()=> clearTimeout(t);
   }, [firebaseEnabled]);
-  const forceFirebaseInit = () => {
+  
+  const forceFirebaseInitLocal = () => {
     if (!cloudDbRef.current) {
-      appendPublishLog && appendPublishLog('global','Forçando init Firebase...');
+      appendPublishLog('global','Forçando init Firebase...');
       initFirebaseFull();
     }
   };
@@ -406,12 +256,20 @@ export const App: React.FC = () => {
       });
     })();
   }, [firebaseEnabled, firebaseUid, cloudDbRef.current, decks, cloudTick]);
+  
   const publishDeckFirebase = async (deck: Deck) => {
-    if (!firebaseEnabled) return alert('Firebase não habilitado');
-    if (!cloudDbRef.current) return alert('Firebase não pronto');
+    if (!firebaseEnabled) {
+      showToast('error', 'Firebase não habilitado');
+      return;
+    }
+    if (!cloudDbRef.current) {
+      showToast('error', 'Firebase não pronto');
+      return;
+    }
     if (!deck.cards.length) {
       appendPublishLog(deck.id, 'Publicação cancelada: baralho vazio.');
-      return alert('Adicione pelo menos 1 carta antes de publicar (requisito das regras).');
+      showToast('error', 'Baralho vazio', 'Adicione pelo menos 1 carta antes de publicar.');
+      return;
     }
     try {
       console.log('[publishDeckFirebase] iniciando', { deckId: deck.id, cloudId: deck.cloudId, name: deck.name });
@@ -427,13 +285,14 @@ export const App: React.FC = () => {
           appendPublishLog(deck.id, 'Auth OK (uid=' + uid + ').');
         } catch (e:any) {
           appendPublishLog(deck.id, 'Falha auth: ' + (e?.code || e?.message || String(e)));
-          alert('Não foi possível autenticar (anônimo).');
+          showToast('error', 'Erro de autenticação', 'Não foi possível autenticar (anônimo).');
           return;
         }
       }
       if (!firebaseUid) {
         appendPublishLog(deck.id, 'UID ausente após tentativa de auth. Abortando.');
-        return alert('UID não disponível para publicar.');
+        showToast('error', 'UID não disponível para publicar.');
+        return;
       }
       let cloudId = deck.cloudId;
       if (!cloudId) {
@@ -484,7 +343,7 @@ export const App: React.FC = () => {
       setFirebaseStatus('Publicado');
       console.log('[publishDeckFirebase] finalizado com sucesso');
       appendPublishLog(deck.id, 'Publicação concluída com sucesso.');
-      alert('Deck publicado na nuvem.');
+      showToast('success', 'Publicação concluída', 'Deck publicado na nuvem com sucesso.');
     } catch (e:any) {
       console.error('[publishDeckFirebase] erro', e);
       const code = e?.code || e?.message || String(e);
@@ -494,7 +353,7 @@ export const App: React.FC = () => {
         appendPublishLog(deck.id, 'Permission denied: confirme que ownerId == request.auth.uid e regras permitem create/update.');
         appendPublishLog(deck.id, 'Debug: uid atual=' + firebaseUid + ' cloudId=' + (deck.cloudId||'-'));
       }
-      alert('Falha ao publicar deck. Código: ' + code);
+      showToast('error', 'Erro na publicação', 'Falha ao publicar deck. Código: ' + code);
     }
   };
   // Fallback: enquanto nenhum deck cloud carregado ainda, continua mostrando decks locais ativos
@@ -556,15 +415,6 @@ export const App: React.FC = () => {
   // Auto-avaliar quando chegar voz
   useEffect(() => { /* auto avaliação tratada após final de voz */ }, []);
 
-  const Nav = () => (
-    <nav className="nav-bar">
-  <button className={view==='home'? 'active':''} onClick={() => setView('home')}>Home</button>
-  <button className={view==='study'? 'active':''} onClick={() => { setView('study'); }}>Estudar</button>
-      <button className={view==='decks'? 'active':''} onClick={() => setView('decks')}>Baralhos</button>
-      <button className={view==='settings'? 'active':''} onClick={() => setView('settings')}>Configurações</button>
-    </nav>
-  );
-
   // StudyView agora componente externo (lote 5). Mantemos lógica de voz e formulário aqui e passamos via props customizadas.
   // helpers deckKeyForHistory / obterRespostaCorreta / gerarDicaComputed agora vindos do engine
 
@@ -604,34 +454,8 @@ export const App: React.FC = () => {
   loadingDeck={false}
   ultimoTempoRespostaMs={ultimoTempoRespostaMs}
   onSimularVoz={(texto) => { setRespostaEntrada(texto); setOrigemUltimaEntrada('voz'); if(autoAvaliarVoz) submeter('voz'); }}
-  ReconhecimentoVozSlot={<ReconhecimentoVoz onResultado={(texto, final) => { setRespostaEntrada(texto); setOrigemUltimaEntrada('voz'); if (final && autoAvaliarVoz) submeter('voz'); }} />}
+  ReconhecimentoVozSlot={<SpeechRecognition onResult={(texto, final) => { setRespostaEntrada(texto); setOrigemUltimaEntrada('voz'); if (final && autoAvaliarVoz) submeter('voz'); }} />}
     />
-  );
-
-  const SettingsView = () => (
-    <>
-      <header className="stack" style={{ gap: 4 }}>
-        <h1>Configurações</h1>
-        <div className="subtitle">Ajuste preferências da aplicação</div>
-      </header>
-      <section className="card stack" style={{ gap: 14 }}>
-        <div className="card-header">Som & Voz</div>
-        <label className="inline" style={{ fontSize: 14 }}>
-          <input type="checkbox" checked={sonsAtivos} onChange={e => setSonsAtivos(e.target.checked)} /> Som ativo
-        </label>
-  <button className="btn btn-secondary" type="button" style={{ maxWidth: 140 }} onClick={() => { primeiraInteracaoRef.current = true; safePlay('ok'); }}>Testar som</button>
-        {!audioPronto && sonsAtivos && <span className="caption">Toque "Testar som" após interação se não ouvir.</span>}
-        <MascoteTTS texto="Exemplo de voz para teste." showVoiceSelector />
-      </section>
-      <section className="card stack" style={{ gap: 14 }}>
-        <div className="card-header">Avaliação</div>
-        <label className="inline" style={{ fontSize: 14 }}>
-          <input type="checkbox" checked={autoAvaliarVoz} onChange={e => setAutoAvaliarVoz(e.target.checked)} /> Auto avaliar resposta de voz (estudo)
-        </label>
-      </section>
-  {/* UI de sincronização legado removida */}
-  {/* Card de status Firebase oculto para simplificar UI */}
-    </>
   );
 
   // CRUD helpers para decks
@@ -656,285 +480,6 @@ export const App: React.FC = () => {
     return id;
   };
 
-  const AddCardForm: React.FC<{ deckId: string }> = ({ deckId }) => {
-    const [q,setQ]=useState(''); const [a,setA]=useState('');
-    return (
-      <form className="flex-gap" onSubmit={e=>{e.preventDefault(); if(!q.trim()||!a.trim())return; addCard(deckId,{ question:q.trim(), answers:a.split('|').map(s=>s.trim()).filter(Boolean) }); setQ(''); setA('');}}>
-        <input placeholder="Pergunta" value={q} onChange={e=>setQ(e.target.value)} />
-        <input placeholder="Resp1 | Resp2" value={a} onChange={e=>setA(e.target.value)} />
-        <button className="btn" type="submit">+</button>
-      </form>
-    );
-  };
-
-  const DecksView = () => {
-    const [expanded, setExpanded] = useState<string | null>(null);
-    const [newDeckName, setNewDeckName] = useState('');
-    const [editingName, setEditingName] = useState('');
-    // Decks publicados disponíveis no cloud que ainda não possuem cópia local
-  const remoteOnly = cloudDecks.filter(cd => !decks.some(ld => ld.cloudId && ld.cloudId === cd.cloudId));
-    return (
-      <>
-        <header className="stack" style={{ gap: 4 }}>
-          <h1>Gerenciar Baralhos</h1>
-          <div className="subtitle">Visualize, renomeie, ative ou edite as cartas</div>
-        </header>
-        {firebaseEnabled && remoteOnly.length > 0 && (
-          <section className="card stack" style={{ gap:10 }}>
-            <div className="card-header">Baralhos na Nuvem (sem cópia local)</div>
-            <div className="stack" style={{ gap:10 }}>
-              {remoteOnly.map(r => (
-                <div key={r.cloudId} className="answer-box" style={{ display:'flex', flexDirection:'column', gap:4 }}>
-                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-          {firebaseEnabled && (
-            <section className="card stack" style={{ gap:12 }}>
-              <div className="card-header">Debug Firebase</div>
-              <div className="caption">Testes rápidos para validar permissões do Storage e Firestore.</div>
-              <div className="stack" style={{ gap:8 }}>
-                <button className="btn" type="button" onClick={async ()=> {
-                  if (!cloudStorageRef.current) { alert('Storage não inicializado'); return; }
-                  try {
-                    console.log('[debugUploadAudio] iniciando teste');
-                    // Garante auth anônima (re-executa caso algo tenha falhado antes)
-                    try {
-                      const { ensureAnonymousAuth } = await import('./firebase/app');
-                      await ensureAnonymousAuth();
-                      console.log('[debugUploadAudio] auth uid', (window as any)?.firebaseAuth?.currentUser?.uid || 'verificar no console');
-                    } catch(authErr) {
-                      console.warn('[debugUploadAudio] falha garantir auth anon', authErr);
-                    }
-                    const blob = new Blob(["test-audio"], { type: 'audio/mpeg' });
-                    const { uploadDeckAudio } = await import('./firebase/storage');
-                    console.log('[debugUploadAudio] tentando upload path deck-audio/debug-test/...');
-                    const res = await uploadDeckAudio(cloudStorageRef.current, 'debug-test', blob, 'debug.mp3');
-                    console.log('[debugUploadAudio] sucesso', res);
-                    alert('Upload teste ok: '+ res.storagePath);
-                  } catch (e:any) {
-                    console.warn('[debugUploadAudio] erro', e);
-                    // Tenta detectar se é erro de permissão (403) travestido de CORS
-                    if (e?.code === 'storage/unauthorized') {
-                      alert('Falha upload: não autorizado pelas regras do Storage. Verifique se publicou as regras e se o caminho deck-audio/* está permitido.');
-                    } else if (e?.message?.includes('CORS')) {
-                      alert('Falha upload (CORS). Possível bloqueio corporativo/proxy. Veja console para detalhes.');
-                    } else {
-                      alert('Falha upload teste: '+ (e?.code || e?.message || String(e)));
-                    }
-                    // Teste adicional: simples fetch GET para ver se domínio é acessível
-                    try {
-                      const testUrl = 'https://firebasestorage.googleapis.com/v0/b/flashcards-d5e0e.appspot.com/o/fake-object-does-not-exist.txt';
-                      const r = await fetch(testUrl);
-                      console.log('[debugUploadAudio] teste GET simples status', r.status);
-                    } catch(fetchErr) {
-                      console.warn('[debugUploadAudio] falha GET simples (pode ser rede/bloqueio)', fetchErr);
-                    }
-                  }
-                }}>Testar upload áudio (debug)</button>
-                <button className="btn btn-secondary" type="button" onClick={async ()=> {
-                  if (!cloudDbRef.current) { alert('DB não inicializado'); return; }
-                  try {
-                    const { collection, getDocs, query, where } = await import('firebase/firestore');
-                    const q = query(collection(cloudDbRef.current,'decks'), where('published','==', true));
-                    const snap = await getDocs(q);
-                    const count = snap.size;
-                    alert('Decks publicados: '+ count);
-                  } catch (e:any) {
-                    alert('Erro listar decks: '+ (e?.code || e?.message || String(e)));
-                  }
-                }}>Listar decks publicados</button>
-              </div>
-              <div className="caption" style={{opacity:0.7}}>Use estes botões apenas para diagnóstico; remova em produção final.</div>
-            </section>
-          )}
-                    <strong>{r.name}</strong>
-                    <span className="badge">{r.cards.length} cartas</span>
-                  </div>
-                  {r.audio && <span className="caption">Áudio disponível</span>}
-                  <div className="inline" style={{ gap:6, flexWrap:'wrap' }}>
-                    <button className="btn" type="button" onClick={()=> { const id = cloneCloudDeck(r); setExpanded(id); }}>Clonar Local</button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
-        <section className="card stack" style={{ gap: 12 }}>
-          <div className="card-header">Novo Baralho</div>
-          <form className="flex-gap" onSubmit={e=>{e.preventDefault(); if(!newDeckName.trim()) return; const id = addDeck(newDeckName.trim(), []); setNewDeckName(''); setExpanded(id);} }>
-            <input type="text" value={newDeckName} placeholder="Nome do baralho" onChange={e=>setNewDeckName(e.target.value)} />
-            <button className="btn" type="submit">Criar</button>
-          </form>
-          <DeckImport hasDeck={false} onLoad={(cards)=> { const id = addDeck('Importado '+ (decks.length+1), cards); setExpanded(id); }} onClear={()=>{}} />
-        </section>
-        {[...decks].sort((a,b)=> a.name.localeCompare(b.name)).map(d => {
-          const editing = expanded === d.id;
-          const st = stats[d.id] || { attempts:0, correct:0, sessions:0 };
-          const taxa = st.attempts ? Math.round(st.correct/st.attempts*100) : 0;
-          return (
-            <section key={d.id} className="card stack" style={{ gap: 10 }}>
-              <div className="card-header inline" style={{ justifyContent:'space-between' }}>
-                {editing ? (
-                  <input
-                    value={editingName}
-                    placeholder="Nome do baralho"
-                    onChange={e=> setEditingName(e.target.value)}
-                    onKeyDown={e=> { if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); if(editingName.trim()){ updateDeck(d.id,{ name: editingName.trim() }); setExpanded(null); } } }}
-                    autoFocus
-                  />
-                ) : (<span>{d.name} {d.cloudId && <span className="badge" style={{ background:'#264d7a' }}>Clonado</span>}</span>)}
-                <div className="inline" style={{ gap:6 }}>
-                  <label className="inline" style={{ fontSize:12 }}>
-                    <input type="checkbox" checked={d.active} onChange={e=> updateDeck(d.id,{ active: e.target.checked })} /> <span className="caption">Ativo</span>
-                  </label>
-                  {editing ? (
-                    <>
-                      <button className="btn btn-secondary" type="button" onClick={()=> { if(editingName.trim()) updateDeck(d.id,{ name: editingName.trim() }); setExpanded(null); }}>Salvar</button>
-                      <button className="btn btn-ghost" type="button" onClick={()=> { setExpanded(null); }}>Cancelar</button>
-                    </>
-                  ) : (
-                    <button className="btn btn-secondary" type="button" onClick={()=> { setExpanded(d.id); setEditingName(d.name); }}>Editar</button>
-                  )}
-                  <button className="btn btn-ghost" type="button" onClick={()=> deleteDeck(d.id)}>Excluir</button>
-                </div>
-              </div>
-              <div className="caption">Cartas: {d.cards.length} · Tentativas: {st.attempts} · Taxa: {taxa}% · Sessões: {st.sessions}</div>
-              {editing && (
-                <div className="stack" style={{ gap: 12 }}>
-                  <div className="answer-box" style={{ maxHeight: 260, overflow:'auto' }}>
-                    {d.cards.map((c,i)=>(
-                      <div key={i} style={{ padding:'6px 0', borderBottom:'1px solid #2f4d70', display:'flex', flexDirection:'column', gap:6 }}>
-                        <input value={c.question} onChange={e=> updateCard(d.id,i,{ ...c, question: e.target.value })} />
-                        <textarea rows={2} style={{ background:'#162b44', border:'1px solid #2f4d70', color:'#fff', borderRadius:4, padding:6 }} value={c.answers.join(' | ')} onChange={e=> updateCard(d.id,i,{ ...c, answers: e.target.value.split('|').map(s=>s.trim()).filter(Boolean) })} />
-                        <div className="inline" style={{ justifyContent:'space-between' }}>
-                          <span className="caption">Respostas separadas por |</span>
-                          <button className="btn btn-ghost" type="button" onClick={()=> deleteCard(d.id,i)}>Remover</button>
-                        </div>
-                      </div>
-                    ))}
-                    {d.cards.length===0 && <div className="caption">Nenhuma carta.</div>}
-                  </div>
-                  <div className="stack" style={{ gap:6 }}>
-                    <div className="card-header" style={{ fontSize:14 }}>Áudio da Aula (MP3)</div>
-                    {!d.audio && (
-                      <div className="stack" style={{ gap:8 }}>
-                        <label style={{ fontSize:12, display:'flex', flexDirection:'column', gap:6 }}>
-                          <input type="file" accept="audio/mpeg,audio/mp4,audio/x-m4a,.m4a,audio/*" aria-label="Selecionar arquivo de áudio do baralho" title="Adicionar áudio ao baralho" onChange={async (e)=> {
-                            const file = e.target.files?.[0];
-                            if (!file) return;
-                            if (file.size > 30 * 1024 * 1024) { alert('Arquivo muito grande (>30MB)'); return; }
-                            const key = d.id + ':' + Date.now();
-                            const ok = await saveAudioBlob(key, file);
-                            if (!ok) { alert('Falha ao salvar áudio (IndexedDB).'); return; }
-                            updateDeck(d.id,{ audio: { name: file.name, size: file.size, type: file.type || 'audio/mpeg', key } });
-                          }} />
-                          <span className="caption">Selecione um áudio (MP3/M4A até 30MB). Salvo localmente.</span>
-                        </label>
-                        <ManualRemoteAudioInput deck={d} onSet={(meta)=> updateDeck(d.id,{ audio: meta })} />
-                      </div>
-                    )}
-                    {d.audio && (
-                      <div className="stack" style={{ gap:6 }}>
-                        <DeckAudioPlayer meta={d.audio} onRemove={async ()=> { await deleteAudioBlob(d.audio!.key); updateDeck(d.id,{ audio: undefined }); }} />
-                      </div>
-                    )}
-                    <div className="card-header" style={{ fontSize:14, marginTop:8 }}>Vídeo (URL)</div>
-                    {!d.video && (
-                      <div className="stack" style={{ gap:8 }}>
-                        <ManualRemoteVideoInput deck={d} onSet={(meta)=> updateDeck(d.id,{ video: meta })} />
-                      </div>
-                    )}
-                    {d.video && (
-                      <DeckVideoPlayer meta={d.video} onRemove={()=> updateDeck(d.id,{ video: undefined })} />
-                    )}
-                  </div>
-                  <AddCardForm deckId={d.id} />
-                  <div className="actions-row" style={{ marginTop:4, flexWrap:'wrap', gap:8 }}>
-                    <button className="btn" type="button" onClick={()=> { setCurrentDeckId(d.id); setIndice(0); setView('study'); setRespostaEntrada(''); setOrigemUltimaEntrada(null); setMostrarRespostaCorreta(false); setRevelarQtde(0); }}>Estudar este</button>
-                    {firebaseEnabled && <button className="btn btn-secondary" type="button" onClick={()=> publishDeckFirebase(d)}>{d.cloudId? 'Atualizar Cloud' : 'Publicar Cloud'}</button>}
-                    {d.published && <span className="badge">Publicado</span>}
-                  </div>
-                  {firebaseEnabled && d.cloudId && (
-                    <div className="inline" style={{ gap:8, flexWrap:'wrap' }}>
-                      <button className="btn btn-ghost" type="button" onClick={async ()=> {
-                        if (!cloudDbRef.current) return alert('Firebase não pronto');
-                        if (!confirm('Remover deck da nuvem? Esta ação não pode ser desfeita.')) return;
-                        appendPublishLog(d.id, 'Removendo deck da nuvem...');
-                        try {
-                          await deleteDeckDoc(cloudDbRef.current, d.cloudId!);
-                          appendPublishLog(d.id, 'Deck removido da nuvem.');
-                          updateDeck(d.id, { cloudId: undefined, published: false });
-                        } catch (err:any) {
-                          console.error('[deleteCloudDeck] erro', err);
-                          appendPublishLog(d.id, 'Erro ao remover deck cloud: ' + (err?.code||err?.message||String(err)));
-                          alert('Falha ao remover deck cloud. Veja console.');
-                        }
-                      }}>Remover Cloud</button>
-                    </div>
-                  )}
-                  {firebaseEnabled && (
-                    <details style={{ background:'#13263b', padding:'8px 10px', borderRadius:6 }}>
-                      <summary style={{ cursor:'pointer', fontSize:12 }}>Log de publicação</summary>
-                      <div style={{ maxHeight:150, overflow:'auto', fontSize:11, marginTop:6, lineHeight:1.3 }}>
-                        {(publishLogs[d.id] && publishLogs[d.id].length) ? publishLogs[d.id].slice(-30).map((l,i)=>(
-                          <div key={i}>{l}</div>
-                        )) : <div style={{ opacity:0.6 }}>Nenhum evento ainda.</div>}
-                      </div>
-                      <div className="inline" style={{ gap:6, marginTop:6 }}>
-                        <button className="btn btn-ghost" type="button" onClick={()=> setPublishLogs(p=> ({ ...p, [d.id]: [] }))} disabled={!publishLogs[d.id] || publishLogs[d.id].length===0}>Limpar log</button>
-                        <button className="btn btn-ghost" type="button" onClick={()=> publishDeckFirebase(d)}>Re-publicar</button>
-                      </div>
-                    </details>
-                  )}
-                </div>
-              )}
-            </section>
-          );
-        })}
-        {decks.length === 0 && <div className="caption">Nenhum baralho ainda. Importe ou crie um novo.</div>}
-      </>
-    );
-  };
-
-  const HomeView = () => {
-  const list = studyDeckSource.map(d=> ({ id:d.id, name:d.name, total:d.cards.length, active:d.active, published: d.published, cloudId: (d as any).cloudId }));
-    const cardStyle: React.CSSProperties = { display:'flex', flexDirection:'column', gap:6 };
-    return (
-      <>
-        <header className="stack" style={{ gap:4 }}>
-          <h1>Seus Baralhos Locais</h1>
-          <div className="subtitle">Estude apenas cópias locais. Você pode publicar para backup, mas o estudo sempre usa a versão local.</div>
-        </header>
-        <div className="stack" style={{ gap:16 }}>
-          {list.map(d => {
-            const st = stats[d.id] || { attempts:0, correct:0, sessions:0 };
-            const rate = st.attempts ? Math.round(st.correct/st.attempts*100) : 0;
-            const deckObj = decks.find(x=> x.id===d.id);
-            return (
-              <div key={d.id} className="card" style={cardStyle}>
-                <div className="card-header inline" style={{ justifyContent:'space-between' }}>
-                  <span>{d.name} {d.cloudId && <span className="badge" style={{ background:'#264d7a' }}>Clonado</span>}</span>
-                  <span className="badge">{d.total} cartas</span>
-                </div>
-                <div className="caption">Tentativas: {st.attempts} · Acertos: {st.correct} · Taxa: {rate}% · Sessões: {st.sessions}</div>
-                {d.published && <div className="caption" style={{ color:'#7ccfff' }}>Publicado</div>}
-                {!d.published && firebaseEnabled && cloudDecks.length===0 && <div className="caption" style={{ color:'#ffa947' }}>Ainda não publicado</div>}
-                {deckObj?.audio && <DeckAudioInline meta={deckObj.audio} />}
-                <div className="inline" style={{ gap:6, flexWrap:'wrap' }}>
-                  {deckObj?.video && (
-                    <button className="btn btn-ghost" type="button" aria-label="Ver vídeo" title="Ver vídeo" onClick={()=> setPreviewVideo(deckObj.video!)} style={{ fontSize:18, lineHeight:1 }}>🎬</button>
-                  )}
-                </div>
-                <div className="actions-row" style={{ marginTop:4 }}>
-                  <button className="btn" type="button" onClick={()=> { setCurrentDeckId(d.id); setIndice(0); setView('study'); setRespostaEntrada(''); setOrigemUltimaEntrada(null); setMostrarRespostaCorreta(false); setRevelarQtde(0); }}>Estudar</button>
-                </div>
-              </div>
-            );
-          })}
-          {list.length === 0 && <div className="caption">Nenhum baralho ativo. Vá em "Baralhos" para criar ou importar.</div>}
-        </div>
-      </>
-    );
-  };
-
   // Estado para pré-visualização de vídeo
   const [previewVideo, setPreviewVideo] = useState<DeckVideoMeta|null>(null);
 
@@ -952,15 +497,51 @@ export const App: React.FC = () => {
       )}
   {/* Remote progress helpers */}
   {/* Implement queue system */}
-      <Nav />
-      {view === 'home' && <HomeView />}
-  {view === 'study' && (
-    (process.env.NODE_ENV === 'test')
-  ? <StudyViewContainer />
-  : <Suspense fallback={<div style={{padding:20}}>Carregando estudo...</div>}><StudyViewContainer /></Suspense>
-  )}
-      {view === 'settings' && <SettingsView />}
-      {view === 'decks' && <DecksView />}
+      <Nav view={view} setView={setView} />
+      {view === 'home' && (
+        <HomeView
+          stats={stats}
+          setCurrentDeckId={setCurrentDeckId}
+          setIndice={setIndice}
+          setView={setView}
+          setRespostaEntrada={setRespostaEntrada}
+          setOrigemUltimaEntrada={setOrigemUltimaEntrada}
+          setMostrarRespostaCorreta={setMostrarRespostaCorreta}
+          setRevelarQtde={setRevelarQtde}
+          setPreviewVideo={setPreviewVideo}
+        />
+      )}
+      {view === 'study' && (
+        (process.env.NODE_ENV === 'test')
+          ? <StudyViewContainer />
+          : <Suspense fallback={<div style={{padding:20}}>Carregando estudo...</div>}><StudyViewContainer /></Suspense>
+      )}
+      {view === 'settings' && (
+        <SettingsView
+          sonsAtivos={sonsAtivos}
+          setSonsAtivos={setSonsAtivos}
+          autoAvaliarVoz={autoAvaliarVoz}
+          setAutoAvaliarVoz={setAutoAvaliarVoz}
+          audioPronto={audioPronto}
+          primeiraInteracaoRef={primeiraInteracaoRef}
+          safePlay={safePlay}
+        />
+      )}
+      {view === 'decks' && (
+        <DecksView
+          stats={stats}
+          setCurrentDeckId={setCurrentDeckId}
+          setIndice={setIndice}
+          setView={setView}
+          setRespostaEntrada={setRespostaEntrada}
+          setOrigemUltimaEntrada={setOrigemUltimaEntrada}
+          setMostrarRespostaCorreta={setMostrarRespostaCorreta}
+          setRevelarQtde={setRevelarQtde}
+          publishLogs={publishLogs}
+          appendPublishLog={appendPublishLog}
+          setPublishLogs={setPublishLogs}
+        />
+      )}
       {previewVideo && (
         <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.72)', display:'flex', flexDirection:'column', justifyContent:'center', alignItems:'center', zIndex:3000, padding:20 }} onClick={()=> setPreviewVideo(null)}>
           <div style={{ background:'#13263b', padding:12, borderRadius:8, maxWidth:'90%', width:800, boxShadow:'0 4px 18px rgba(0,0,0,0.4)' }} onClick={e=> e.stopPropagation()}>
@@ -976,7 +557,7 @@ export const App: React.FC = () => {
       {firebaseEnabled && firebaseInitDelay && !cloudDbRef.current && (
         <div style={{position:'fixed',bottom:30,left:10,right:10,background:'#2d3f53',padding:'10px 12px',border:'1px solid #44617f',borderRadius:6,fontSize:12,display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
           <span>Firebase ainda não inicializado (possível atraso de rede). Tente novamente.</span>
-          <button className="btn btn-secondary" type="button" onClick={forceFirebaseInit}>Reinicializar</button>
+          <button className="btn btn-secondary" type="button" onClick={forceFirebaseInitLocal}>Reinicializar</button>
         </div>
       )}
       <footer>Kids Flashcards · Interface melhorada · v1</footer>
@@ -987,77 +568,34 @@ export const App: React.FC = () => {
   );
 };
 
-// Entrada manual de URL remota (Firebase Storage ou outro CDN) sem upload automático
-const ManualRemoteAudioInput: React.FC<{ deck: Deck; onSet: (meta: DeckAudioMeta) => void }> = ({ deck, onSet }) => {
-  const [url, setUrl] = useState('');
-  const [processing, setProcessing] = useState(false);
-  const apply = async () => {
-    if (!url.trim()) return;
-    setProcessing(true);
-    let clean = url.trim();
-    // Aceita link compartilhável do Firebase (token=) ou gs:// ou https://firebasestorage.googleapis.com/.../o/...
-    // Para simplicidade se começar com gs:// rejeitamos (não diretamente acessível via audio tag)
-    if (clean.startsWith('gs://')) {
-      alert('Use o link público (https) obtido pelo botão "Obter URL de download" no Firebase Storage.');
-      setProcessing(false); return;
-    }
-    // Gera meta mínima
-    const nameGuess = clean.split('?')[0].split('/').pop() || 'audio.mp3';
-    // Tenta HEAD para obter content-type/size (não essencial)
-    let size = 0; let type = 'audio/mpeg';
-    try { const head = await fetch(clean, { method:'HEAD' }); if (head.ok) { size = Number(head.headers.get('content-length')||0); const ct = head.headers.get('content-type'); if (ct) type = ct; } } catch { /* ignore */ }
-    onSet({ name: nameGuess, size, type, key: clean, remotePath: undefined, downloadUrl: clean });
-    setProcessing(false); setUrl('');
-  };
+// Main App component with providers
+export const App: React.FC = () => {
   return (
-    <div className="stack" style={{ gap:4 }}>
-      <input placeholder="Ou cole URL pública do áudio" value={url} onChange={e=> setUrl(e.target.value)} onKeyDown={e=> { if(e.key==='Enter'){ e.preventDefault(); apply(); } }} />
-      <div className="inline" style={{ gap:6 }}>
-        <button className="btn btn-secondary" type="button" disabled={!url.trim()||processing} onClick={apply}>Usar URL</button>
-        {processing && <span className="caption">Validando...</span>}
-      </div>
-      <span className="caption" style={{ opacity:0.7 }}>Cole a URL de download do Firebase Storage (começa com https) ou outro host público. Será referenciada diretamente.</span>
-    </div>
+    <ToastProvider>
+      <DeckProvider>
+        <AppContentWithContexts />
+      </DeckProvider>
+    </ToastProvider>
   );
 };
 
-// Entrada manual de vídeo remoto semelhante ao áudio
-const ManualRemoteVideoInput: React.FC<{ deck: Deck; onSet: (meta: DeckVideoMeta) => void }> = ({ deck, onSet }) => {
-  const [url, setUrl] = React.useState('');
-  const [poster, setPoster] = React.useState('');
-  const [open, setOpen] = React.useState(false);
+const AppContentWithContexts: React.FC = () => {
+  const { updateDeck } = useDeckContext();
+  
   return (
-    <details open={open} onToggle={e=> setOpen((e.target as HTMLDetailsElement).open)} style={{ background:'#13263b', padding:'6px 8px', borderRadius:6 }}>
-      <summary style={{ cursor:'pointer', fontSize:12 }}>Usar vídeo via URL</summary>
-      <div className="stack" style={{ gap:6, marginTop:6 }}>
-        <input value={url} onChange={e=> setUrl(e.target.value)} placeholder="URL do vídeo (MP4/M3U8)" style={{ fontSize:12 }} />
-        <input value={poster} onChange={e=> setPoster(e.target.value)} placeholder="Poster opcional (imagem)" style={{ fontSize:12 }} />
-        <div className="inline" style={{ gap:6 }}>
-          <button className="btn btn-secondary" type="button" disabled={!url.trim()} onClick={()=> {
-            try { new URL(url); poster && new URL(poster); } catch { alert('URL inválida'); return; }
-            const meta: DeckVideoMeta = { name: url.split('/').pop()||'video', size:0, type:'video', key:url, downloadUrl:url, remotePath:url, ...(poster? { posterUrl: poster }: {}) };
-            onSet(meta); setUrl(''); setPoster(''); setOpen(false);
-          }}>Aplicar</button>
-          <button className="btn btn-ghost" type="button" onClick={()=> { setUrl(''); setPoster(''); }}>Limpar</button>
-        </div>
-        <div className="caption">O vídeo não é baixado agora. Será carregado via URL pública.</div>
-      </div>
-    </details>
+    <CloudProvider updateDeck={updateDeck}>
+      <AppContentWithToasts />
+    </CloudProvider>
   );
 };
 
-// Player simples de vídeo
-const DeckVideoPlayer: React.FC<{ meta: DeckVideoMeta; onRemove: () => void }> = ({ meta, onRemove }) => {
+const AppContentWithToasts: React.FC = () => {
+  const { toasts, dismissToast } = useToast();
+  
   return (
-    <div className="stack" style={{ gap:6 }}>
-      <div className="inline" style={{ justifyContent:'space-between', alignItems:'center' }}>
-        <strong style={{ fontSize:12 }}>Vídeo:</strong>
-        <button className="btn btn-ghost" type="button" onClick={onRemove}>Remover</button>
-      </div>
-      <video controls preload="none" style={{ maxWidth:'100%', border:'1px solid #2f4d70', borderRadius:4 }} poster={meta.posterUrl} src={meta.downloadUrl || meta.remotePath || meta.key} />
-      <div className="caption" style={{ wordBreak:'break-all' }}>{meta.downloadUrl||meta.remotePath||meta.key}</div>
-    </div>
+    <>
+      <AppContent />
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+    </>
   );
 };
-
-
